@@ -1,0 +1,251 @@
+"""
+Delayed radio: plays an internet radio stream behind live, so radio commentary
+can be lined up with a TV picture that arrives late.
+
+One shared upstream connection, one ring buffer, N listeners.
+Each listener picks its own delay; the buffer is sized for the maximum.
+
+Config: STREAM_URL, DELAY_SECONDS (starting position), MAX_DELAY_SECONDS,
+STATION_NAME.
+"""
+
+import os
+import time
+import threading
+from collections import deque
+
+import requests
+from flask import Flask, Response, jsonify, request, send_from_directory
+
+# ---------------------------------------------------------------- config
+
+# Radio Garden's public endpoint for Radio Kiss Kiss Napoli. It redirects to
+# the station's real stream, which requests follows automatically. Replace it
+# with the direct Fluidstream URL by setting STREAM_URL once you have it.
+DEFAULT_STREAM_URL = "https://radio.garden/api/ara/content/listen/EtRKdLPn/channel.mp3"
+
+STREAM_URL = os.environ.get("STREAM_URL", DEFAULT_STREAM_URL).strip()
+STATION_NAME = os.environ.get("STATION_NAME", "Kiss Kiss Napoli")
+
+# Where the slider starts. Streaming TV apps typically run 30-90s behind.
+DEFAULT_DELAY_SECONDS = int(os.environ.get("DELAY_SECONDS", "60"))
+# How far back the buffer can reach, i.e. the top of the slider.
+MAX_DELAY_SECONDS = int(os.environ.get("MAX_DELAY_SECONDS", "180"))
+
+# Extra history kept beyond the maximum delay, so a listener that drifts
+# slightly behind still finds its next chunk in the buffer.
+SLACK_SECONDS = 30
+RETENTION_SECONDS = MAX_DELAY_SECONDS + SLACK_SECONDS
+
+CHUNK_SIZE = 4096
+DEFAULT_CONTENT_TYPE = "audio/mpeg"
+
+# ---------------------------------------------------------------- buffer
+
+
+class RingBuffer:
+    """Chunks of audio tagged with the wall-clock time they arrived.
+
+    Chunks carry a monotonically increasing sequence number so a listener can
+    hold a cursor that survives eviction from the left of the deque.
+    """
+
+    def __init__(self, retention_seconds):
+        self.retention = retention_seconds
+        self._chunks = deque()  # (seq, ts, bytes)
+        self._next_seq = 0
+        self._lock = threading.Lock()
+        self._new_data = threading.Condition(self._lock)
+
+    def append(self, data):
+        now = time.time()
+        with self._new_data:
+            self._chunks.append((self._next_seq, now, data))
+            self._next_seq += 1
+            cutoff = now - self.retention
+            while self._chunks and self._chunks[0][1] < cutoff:
+                self._chunks.popleft()
+            self._new_data.notify_all()
+
+    def span_seconds(self):
+        """How far back the buffer currently reaches, in seconds."""
+        with self._lock:
+            if not self._chunks:
+                return 0.0
+            return time.time() - self._chunks[0][1]
+
+    def first_seq_at_or_after(self, ts):
+        """Sequence number of the oldest chunk not older than ts.
+
+        Returns None if the buffer is empty. If every chunk is older than ts
+        (upstream is stalled) the newest sequence + 1 is returned, so the
+        listener waits for fresh data instead of replaying old audio.
+        """
+        with self._lock:
+            if not self._chunks:
+                return None
+            for seq, chunk_ts, _ in self._chunks:
+                if chunk_ts >= ts:
+                    return seq
+            return self._chunks[-1][0] + 1
+
+    def get(self, seq, timeout=1.0):
+        """Return (ts, data) for `seq`.
+
+        ('evicted', oldest_seq) if `seq` has already fallen out of the buffer.
+        None if `seq` has not arrived yet within `timeout`.
+        """
+        deadline = time.time() + timeout
+        with self._new_data:
+            while True:
+                if self._chunks:
+                    base = self._chunks[0][0]
+                    if seq < base:
+                        return ("evicted", base)
+                    idx = seq - base
+                    if idx < len(self._chunks):
+                        _, ts, data = self._chunks[idx]
+                        return (ts, data)
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                self._new_data.wait(remaining)
+
+
+buffer = RingBuffer(RETENTION_SECONDS)
+
+# ---------------------------------------------------------------- upstream
+
+
+class Upstream:
+    def __init__(self):
+        self.connected = False
+        self.content_type = DEFAULT_CONTENT_TYPE
+
+
+upstream = Upstream()
+
+
+def upstream_loop():
+    backoff = 1.0
+    while True:
+        try:
+            # No Icy-MetaData header: we want pure audio bytes, with no
+            # metadata interleaved into the stream.
+            response = requests.get(
+                STREAM_URL,
+                headers={"User-Agent": "delayed-radio/1.0"},
+                stream=True,
+                timeout=(10, 30),
+            )
+            response.raise_for_status()
+
+            content_type = response.headers.get("Content-Type")
+            if content_type:
+                upstream.content_type = content_type.split(";")[0].strip()
+
+            upstream.connected = True
+            backoff = 1.0
+
+            for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                if chunk:
+                    buffer.append(chunk)
+
+            raise RuntimeError("upstream closed the connection")
+
+        except Exception as exc:  # noqa: BLE001 - the loop must never die
+            upstream.connected = False
+            app.logger.warning("upstream error (%s), retrying in %.0fs", exc, backoff)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
+
+# ---------------------------------------------------------------- app
+
+# No static folder: index.html is served explicitly, so nothing else in the
+# directory (app.py included) is reachable over HTTP.
+app = Flask(__name__)
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def requested_delay():
+    try:
+        value = float(request.args.get("delay", DEFAULT_DELAY_SECONDS))
+    except (TypeError, ValueError):
+        value = DEFAULT_DELAY_SECONDS
+    return max(0.0, min(value, float(MAX_DELAY_SECONDS)))
+
+
+@app.route("/")
+def index():
+    return send_from_directory(HERE, "index.html")
+
+
+@app.route("/status")
+def status():
+    span = buffer.span_seconds()
+    delay = requested_delay()
+    return jsonify(
+        buffer_seconds=round(span, 1),
+        ready=span >= delay,
+        upstream_connected=upstream.connected,
+        delay_seconds=round(delay),
+        default_delay_seconds=DEFAULT_DELAY_SECONDS,
+        max_delay_seconds=MAX_DELAY_SECONDS,
+        station=STATION_NAME,
+    )
+
+
+def delayed_chunks(delay):
+    # Wait until the buffer reaches back far enough to start serving.
+    while buffer.span_seconds() < delay:
+        time.sleep(0.5)
+
+    seq = buffer.first_seq_at_or_after(time.time() - delay)
+    if seq is None:
+        return
+
+    while True:
+        item = buffer.get(seq, timeout=1.0)
+
+        if item is None:
+            # Nothing new yet: upstream stalled, or we caught up to the edge.
+            continue
+
+        if item[0] == "evicted":
+            # We fell behind far enough that our next chunk is gone.
+            # Rejoin at the oldest chunk still held rather than dropping out.
+            seq = item[1]
+            continue
+
+        ts, data = item
+
+        # Never serve audio younger than the delay.
+        age = time.time() - ts
+        if age < delay:
+            time.sleep(min(delay - age, 0.5))
+            continue
+
+        yield data
+        seq += 1
+
+
+@app.route("/stream")
+def stream():
+    return Response(
+        delayed_chunks(requested_delay()),
+        mimetype=upstream.content_type,
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "Connection": "close",
+        },
+    )
+
+
+# ---------------------------------------------------------------- startup
+
+threading.Thread(target=upstream_loop, name="upstream", daemon=True).start()
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), threaded=True)

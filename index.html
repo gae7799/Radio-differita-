@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radio in differita</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    font: 16px/1.5 system-ui, -apple-system, sans-serif;
+    background: #111; color: #eee;
+  }
+  main { width: 100%; max-width: 380px; padding: 2rem 1.5rem; text-align: center; }
+
+  #station { font-size: 20px; font-weight: 600; margin-bottom: 1.75rem; }
+
+  #btn {
+    width: 104px; height: 104px; border-radius: 50%;
+    border: 2px solid #eee; background: none; color: #eee;
+    font-size: 36px; line-height: 1; cursor: pointer;
+  }
+  #btn:disabled { opacity: .25; }
+
+  #state { margin-top: .75rem; font-size: 14px; opacity: .75; min-height: 1.5em; }
+
+  #tuner { margin-top: 2.25rem; border-top: 1px solid #2a2a2a; padding-top: 1.5rem; }
+  #row { display: flex; align-items: center; justify-content: center; gap: 1rem; }
+  .nudge {
+    width: 52px; height: 52px; border-radius: 50%; flex: none;
+    border: 1px solid #444; background: none; color: #eee;
+    font-size: 22px; line-height: 1; cursor: pointer;
+  }
+  .nudge:active { background: #262626; }
+  #amount { flex: 1; }
+  #secs { font-size: 34px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #unit { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; opacity: .5; }
+  #slider { width: 100%; margin-top: 1.25rem; accent-color: #eee; }
+</style>
+</head>
+<body>
+<main>
+  <div id="station">&nbsp;</div>
+
+  <button id="btn" disabled>&#9654;</button>
+  <div id="state">connessione…</div>
+
+  <div id="tuner">
+    <div id="row">
+      <button class="nudge" id="minus">&minus;</button>
+      <div id="amount">
+        <div id="secs">–</div>
+        <div id="unit">secondi indietro</div>
+      </div>
+      <button class="nudge" id="plus">+</button>
+    </div>
+    <input type="range" id="slider" min="0" max="180" step="1" value="60">
+  </div>
+
+  <audio id="audio"></audio>
+</main>
+
+<script>
+const audio  = document.getElementById('audio');
+const btn    = document.getElementById('btn');
+const slider = document.getElementById('slider');
+const secs   = document.getElementById('secs');
+const stateEl = document.getElementById('state');
+
+let delay = null;      // seconds behind live
+let ready = false;
+let playing = false;
+let retune = null;     // debounce timer
+
+function mmss(s) {
+  s = Math.max(0, Math.round(s));
+  return String(Math.floor(s / 60)).padStart(2, '0') + ':' +
+         String(s % 60).padStart(2, '0');
+}
+
+function connect() {
+  audio.src = '/stream?delay=' + delay + '&t=' + Date.now();
+  audio.play().catch(() => {});
+}
+
+function setDelay(value) {
+  delay = Math.max(0, Math.min(value, Number(slider.max)));
+  slider.value = delay;
+  secs.textContent = delay;
+  // Reconnect after the tapping stops: the delay is fixed per connection.
+  if (playing) {
+    clearTimeout(retune);
+    retune = setTimeout(connect, 600);
+  }
+  poll();
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/status?delay=' + (delay === null ? '' : delay),
+                          { cache: 'no-store' });
+    const s = await r.json();
+
+    document.getElementById('station').textContent = s.station;
+    document.title = s.station + ' in differita';
+    slider.max = s.max_delay_seconds;
+
+    if (delay === null) setDelay(s.default_delay_seconds);
+
+    ready = s.ready;
+    btn.disabled = !s.ready;
+
+    if (!s.ready) {
+      stateEl.textContent = 'in buffering, pronto tra ' + mmss(delay - s.buffer_seconds);
+    } else if (!playing) {
+      stateEl.textContent = s.upstream_connected ? 'pronto' : 'pronto (upstream giù)';
+    } else {
+      stateEl.textContent = s.upstream_connected ? 'in onda' : 'upstream giù';
+    }
+  } catch (e) {
+    stateEl.textContent = 'server non raggiungibile';
+    btn.disabled = true;
+  }
+}
+
+btn.addEventListener('click', () => {
+  if (playing) {
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
+    playing = false;
+    btn.innerHTML = '&#9654;';
+  } else if (ready) {
+    playing = true;
+    btn.innerHTML = '&#10073;&#10073;';
+    connect();
+  }
+  poll();
+});
+
+slider.addEventListener('input', () => setDelay(Number(slider.value)));
+document.getElementById('minus').addEventListener('click', () => setDelay(delay - 1));
+document.getElementById('plus').addEventListener('click', () => setDelay(delay + 1));
+
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>
