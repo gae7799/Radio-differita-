@@ -58,7 +58,7 @@ FOOTBALL_API_BASE = os.environ.get("FOOTBALL_API_BASE", "https://api.football-da
 # about 65. Raise LIVE_POLL_SECONDS if you follow more than one a day.
 API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY", "").strip()
 API_FOOTBALL_BASE = os.environ.get("API_FOOTBALL_BASE", "https://v3.football.api-sports.io")
-LIVE_POLL_SECONDS = int(os.environ.get("LIVE_POLL_SECONDS", "90"))
+LIVE_POLL_SECONDS = int(os.environ.get("LIVE_POLL_SECONDS", "120"))
 # When no fixture list is available we cannot tell when a match is on, so we
 # look in rarely: 900s is 96 calls a day, just inside the free allowance.
 LIVE_IDLE_POLL_SECONDS = int(os.environ.get("LIVE_IDLE_POLL_SECONDS", "900"))
@@ -275,7 +275,7 @@ PAUSED_STATUSES = {"HT", "BT", "SUSP", "INT", "PST"}
 STALE_AFTER = 240
 # The minute must advance about once a minute. If it does not, the feed is
 # stuck and counting locally would quietly invent a time.
-STUCK_AFTER = 180
+STUCK_AFTER = 300
 
 
 class LiveMatch:
@@ -413,17 +413,25 @@ def live_loop():
             else:
                 # Re-anchor only when the minute actually advances, so the
                 # clock keeps running smoothly instead of stuttering.
-                if found["seconds"] != live.anchor_seconds:
+                # Re-anchor when the minute advances, and also when the phase
+                # changes: coming out of half time the feed can report 2H
+                # while still saying minute 45, and without this the clock
+                # would stay pinned to an anchor a quarter of an hour old.
+                if (found["seconds"] != live.anchor_seconds
+                        or found["status"] != live.status):
                     live.anchor_seconds = found["seconds"]
                     live.anchored_at = time.time()
                 live.last_seen = time.time()
                 live.status = found["status"]
                 live.home, live.away = found["home"], found["away"]
+            wait = LIVE_POLL_SECONDS if window else LIVE_IDLE_POLL_SECONDS
         except Exception as exc:  # noqa: BLE001 - never disturb the radio
             live.last_error = str(exc)
             app.logger.warning("live lookup failed: %s", exc)
+            # Out of quota: hammering it only wastes tomorrow's allowance too.
+            wait = 900 if "429" in str(exc) else LIVE_POLL_SECONDS
 
-        time.sleep(LIVE_POLL_SECONDS if window else LIVE_IDLE_POLL_SECONDS)
+        time.sleep(wait)
 
 
 # ---------------------------------------------------------------- app
@@ -485,6 +493,12 @@ def status():
             }
         ),
         live_state=live_state(),
+        # Why the feed is unhappy, in plain sight: without this the only way
+        # to tell a spent quota from a wrong key is to read the server logs.
+        live_error=(live.last_error or "")[:160] or None,
+        live_last_seen_age=(
+            None if live.last_seen is None else round(time.time() - live.last_seen)
+        ),
     )
 
 
