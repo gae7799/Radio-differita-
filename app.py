@@ -13,6 +13,7 @@ import os
 import time
 import threading
 from collections import deque
+from datetime import datetime, timedelta, timezone
 
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -39,6 +40,16 @@ RETENTION_SECONDS = MAX_DELAY_SECONDS + SLACK_SECONDS
 
 CHUNK_SIZE = 4096
 DEFAULT_CONTENT_TYPE = "audio/mpeg"
+
+# --- next fixture (optional) -------------------------------------------
+# Free API key from football-data.org. Without it this whole feature stays
+# switched off and the page looks exactly as it did before.
+FOOTBALL_TOKEN = os.environ.get("FOOTBALL_DATA_TOKEN", "").strip()
+TEAM_NAME = os.environ.get("TEAM_NAME", "Napoli")
+# Serie A and Champions League: the two free-tier competitions Napoli plays.
+COMPETITIONS = [c for c in os.environ.get("COMPETITIONS", "SA,CL").split(",") if c]
+FIXTURE_REFRESH_SECONDS = 1800
+FOOTBALL_API_BASE = os.environ.get("FOOTBALL_API_BASE", "https://api.football-data.org/v4")
 
 # ---------------------------------------------------------------- buffer
 
@@ -121,6 +132,12 @@ class Upstream:
     def __init__(self):
         self.connected = False
         self.content_type = DEFAULT_CONTENT_TYPE
+        # How many times the upstream had to be re-opened since startup.
+        # Each reconnect is a suspect for drift: Icecast normally replays a
+        # few seconds of backlog on connect, and that backlog lands in the
+        # buffer stamped "now", pushing every listener further behind.
+        self.reconnects = 0
+        self.started_at = time.time()
 
 
 upstream = Upstream()
@@ -128,6 +145,7 @@ upstream = Upstream()
 
 def upstream_loop():
     backoff = 1.0
+    connections = 0
     while True:
         try:
             # No Icy-MetaData header: we want pure audio bytes, with no
@@ -146,6 +164,8 @@ def upstream_loop():
 
             upstream.connected = True
             backoff = 1.0
+            connections += 1
+            upstream.reconnects = connections - 1
 
             for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
                 if chunk:
@@ -158,6 +178,80 @@ def upstream_loop():
             app.logger.warning("upstream error (%s), retrying in %.0fs", exc, backoff)
             time.sleep(backoff)
             backoff = min(backoff * 2, 30.0)
+
+
+# ---------------------------------------------------------------- fixtures
+
+
+class Fixtures:
+    """The next match, refreshed in the background.
+
+    Deliberately inert: any failure leaves `next_match` as it was (or None)
+    and never touches the audio path.
+    """
+
+    def __init__(self):
+        self.next_match = None
+        self.last_error = None
+        self.checked_at = None
+
+
+fixtures = Fixtures()
+
+
+def _team_of(side):
+    side = side or {}
+    return side.get("shortName") or side.get("name") or ""
+
+
+def fetch_next_match():
+    now = datetime.now(timezone.utc)
+    params = {
+        "dateFrom": now.strftime("%Y-%m-%d"),
+        "dateTo": (now + timedelta(days=60)).strftime("%Y-%m-%d"),
+    }
+    # A match already under way should stay on screen, so look slightly back.
+    floor = (now - timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+
+    best = None
+    for code in COMPETITIONS:
+        response = requests.get(
+            f"{FOOTBALL_API_BASE}/competitions/{code}/matches",
+            headers={"X-Auth-Token": FOOTBALL_TOKEN},
+            params=params,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        for match in response.json().get("matches", []):
+            if match.get("status") == "FINISHED":
+                continue
+            home, away = _team_of(match.get("homeTeam")), _team_of(match.get("awayTeam"))
+            if TEAM_NAME.lower() not in f"{home} {away}".lower():
+                continue
+            kickoff = match.get("utcDate")
+            if not kickoff or kickoff < floor:
+                continue
+            if best is None or kickoff < best["kickoff_utc"]:
+                best = {
+                    "home": home,
+                    "away": away,
+                    "kickoff_utc": kickoff,
+                    "competition": (match.get("competition") or {}).get("name", ""),
+                }
+    return best
+
+
+def fixtures_loop():
+    while True:
+        try:
+            fixtures.next_match = fetch_next_match()
+            fixtures.last_error = None
+        except Exception as exc:  # noqa: BLE001 - never disturb the radio
+            fixtures.last_error = str(exc)
+            app.logger.warning("fixtures lookup failed: %s", exc)
+        fixtures.checked_at = time.time()
+        time.sleep(FIXTURE_REFRESH_SECONDS)
 
 
 # ---------------------------------------------------------------- app
@@ -193,6 +287,9 @@ def status():
         default_delay_seconds=DEFAULT_DELAY_SECONDS,
         max_delay_seconds=MAX_DELAY_SECONDS,
         station=STATION_NAME,
+        upstream_reconnects=upstream.reconnects,
+        uptime_seconds=round(time.time() - upstream.started_at),
+        next_match=fixtures.next_match,
     )
 
 
@@ -245,6 +342,9 @@ def stream():
 # ---------------------------------------------------------------- startup
 
 threading.Thread(target=upstream_loop, name="upstream", daemon=True).start()
+
+if FOOTBALL_TOKEN:
+    threading.Thread(target=fixtures_loop, name="fixtures", daemon=True).start()
 
 
 if __name__ == "__main__":
