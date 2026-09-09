@@ -7,6 +7,8 @@
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  /* senza questo, un display: flex esplicito vince sull'attributo hidden */
+  [hidden] { display: none !important; }
   body {
     /* manipulation = niente zoom col doppio tocco; il pizzico resta attivo */
     touch-action: manipulation;
