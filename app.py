@@ -223,7 +223,7 @@ def fetch_next_match():
         "dateTo": (now + timedelta(days=60)).strftime("%Y-%m-%d"),
     }
     # A match already under way should stay on screen, so look slightly back.
-    floor = (now - timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+    floor = (now - timedelta(hours=4)).isoformat().replace("+00:00", "Z")
 
     best = None
     for code in COMPETITIONS:
@@ -269,30 +269,50 @@ def fixtures_loop():
 # ---------------------------------------------------------------- live clock
 
 
+# Play is stopped: the clock must freeze instead of running on.
+PAUSED_STATUSES = {"HT", "BT", "SUSP", "INT", "PST"}
+# No confirmation from the feed for this long and the clock is not trustworthy.
+STALE_AFTER = 240
+# The minute must advance about once a minute. If it does not, the feed is
+# stuck and counting locally would quietly invent a time.
+STUCK_AFTER = 180
+
+
 class LiveMatch:
     """The match clock as read from the feed, plus the moment it was read.
 
     The feed only reports whole minutes, so we anchor on the instant the
     minute changes and let the clock run locally from there. That is what
-    turns a coarse, occasional reading into a clock that ticks.
+    turns a coarse, occasional reading into a clock that ticks — but only
+    while the feed keeps confirming it.
     """
 
     def __init__(self):
         self.anchored_at = None      # server time when this minute was first seen
         self.anchor_seconds = None   # match seconds at that instant
-        self.status = None           # 1H, HT, 2H, FT...
+        self.last_seen = None        # last successful reading of OUR match
+        self.status = None           # 1H, HT, 2H...
         self.home = None
         self.away = None
         self.last_error = None
 
     def clock_seconds(self):
-        if self.anchored_at is None:
+        if self.anchored_at is None or self.last_seen is None:
             return None
-        return self.anchor_seconds + (time.time() - self.anchored_at)
+        now = time.time()
+        # The feed stopped confirming: better no clock than a made-up one.
+        if now - self.last_seen > STALE_AFTER:
+            return None
+        if self.status in PAUSED_STATUSES:
+            return self.anchor_seconds
+        if now - self.anchored_at > STUCK_AFTER:
+            return None
+        return self.anchor_seconds + (now - self.anchored_at)
 
     def clear(self):
         self.anchored_at = None
         self.anchor_seconds = None
+        self.last_seen = None
         self.status = None
 
 
@@ -309,7 +329,36 @@ def in_match_window():
     except (ValueError, KeyError, TypeError):
         return None
     now = datetime.now(timezone.utc)
-    return timedelta(minutes=-5) <= (now - kickoff) <= timedelta(minutes=150)
+    # Wide enough for extra time and a long half-time.
+    return timedelta(minutes=-5) <= (now - kickoff) <= timedelta(minutes=190)
+
+
+def _first_word(name):
+    return (name or "").strip().lower().split(" ")[0]
+
+
+def _same_fixture(home, away, kickoff_iso, expected):
+    """Is this live fixture the one we are waiting for?
+
+    Matching on "Napoli" alone is not enough: at any hour there are other
+    live fixtures with that word in a team name (women's, youth, other
+    countries). We also require the opponent, and the kickoff time when we
+    have it, so we cannot latch onto the wrong match.
+    """
+    if not expected:
+        return TEAM_NAME.lower() in f"{home} {away}".lower()
+
+    names = {_first_word(home), _first_word(away)}
+    wanted = {_first_word(expected.get("home")), _first_word(expected.get("away"))}
+    if names != wanted:
+        return False
+
+    try:
+        theirs = datetime.fromisoformat((kickoff_iso or "").replace("Z", "+00:00"))
+        ours = datetime.fromisoformat(expected["kickoff_utc"].replace("Z", "+00:00"))
+    except (ValueError, KeyError, TypeError):
+        return True  # names already agree; no usable time to cross-check
+    return abs((theirs - ours).total_seconds()) <= 900
 
 
 def fetch_live():
@@ -321,14 +370,18 @@ def fetch_live():
     )
     response.raise_for_status()
 
+    expected = fixtures.next_match
+
     for item in response.json().get("response", []):
         teams = item.get("teams") or {}
         home = ((teams.get("home") or {}).get("name")) or ""
         away = ((teams.get("away") or {}).get("name")) or ""
-        if TEAM_NAME.lower() not in f"{home} {away}".lower():
+        fixture = item.get("fixture") or {}
+
+        if not _same_fixture(home, away, fixture.get("date"), expected):
             continue
 
-        status = ((item.get("fixture") or {}).get("status")) or {}
+        status = fixture.get("status") or {}
         elapsed = status.get("elapsed")
         if elapsed is None:
             continue
@@ -363,6 +416,7 @@ def live_loop():
                 if found["seconds"] != live.anchor_seconds:
                     live.anchor_seconds = found["seconds"]
                     live.anchored_at = time.time()
+                live.last_seen = time.time()
                 live.status = found["status"]
                 live.home, live.away = found["home"], found["away"]
         except Exception as exc:  # noqa: BLE001 - never disturb the radio
@@ -393,6 +447,18 @@ def index():
     return send_from_directory(HERE, "index.html")
 
 
+def live_state():
+    """Why there is (or is not) a live clock — so a problem can be read off
+    /status from a phone instead of guessed at."""
+    if not API_FOOTBALL_KEY:
+        return "off"
+    if live.anchored_at is None:
+        return "no_match"
+    if live.clock_seconds() is not None:
+        return "paused" if live.status in PAUSED_STATUSES else "ok"
+    return "stale"
+
+
 @app.route("/status")
 def status():
     span = buffer.span_seconds()
@@ -418,6 +484,7 @@ def status():
                 "away": live.away,
             }
         ),
+        live_state=live_state(),
     )
 
 

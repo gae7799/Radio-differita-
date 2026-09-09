@@ -138,6 +138,15 @@ let nextMatch = null;
 let anchor = null;
 let pendingTarget = null;
 let liveClock = null;   // {seconds, receivedAt, status} dal feed
+let liveState = 'off';
+
+// Il feed ha un suo ritardo, e anche lo streaming radio ce l'ha. La differenza
+// fra i due è una costante che non possiamo calcolare: la impariamo da te.
+// Quando dopo un "imposta" correggi a mano, quella correzione ce la teniamo.
+let feedBias = 0;
+let lastSuggested = null;
+try { feedBias = Number(localStorage.getItem('feedBias')) || 0; } catch (e) {}
+function saveBias() { try { localStorage.setItem('feedBias', String(feedBias)); } catch (e) {} }
 
 function mmss(s) {
   s = Math.max(0, Math.round(s));
@@ -186,9 +195,20 @@ function renderClock() {
   const live = isLive();
   document.getElementById('clockLabel').textContent =
     live ? 'tempo di gioco · in diretta' : 'tempo di gioco alla radio';
-  document.getElementById('clockNote').textContent =
-    live ? (liveClock.status ? 'dal feed · ' + liveClock.status : 'dal feed')
-         : (anchor ? '' : 'partita non in corso — puoi avviarlo a mano');
+
+  let note;
+  if (live) {
+    note = 'dal feed' + (liveClock.status ? ' · ' + liveClock.status : '');
+    if (liveState === 'paused') note += ' · fermo';
+    if (feedBias) note += ' · correzione ' + (feedBias > 0 ? '+' : '') + feedBias + ' s';
+  } else if (liveState === 'stale') {
+    note = 'il feed non risponde — avvialo a mano';
+  } else if (anchor) {
+    note = 'avviato a mano';
+  } else {
+    note = 'partita non in corso — puoi avviarlo a mano';
+  }
+  document.getElementById('clockNote').textContent = note;
   document.getElementById('anchors').hidden = live;
 }
 
@@ -219,7 +239,7 @@ function compare() {
       pendingTarget = null;
       return;
     }
-    pendingTarget = Math.min(gap, Number(slider.max));
+    pendingTarget = Math.max(0, Math.min(gap + feedBias, Number(slider.max)));
     verdict.textContent = 'la TV è indietro di ' + gap + ' s';
     applyBtn.textContent = 'imposta ' + pendingTarget + ' s';
     applyBtn.hidden = false;
@@ -247,7 +267,17 @@ function connect() {
   audio.play().catch(() => {});
 }
 
-function setDelay(value) {
+function setDelay(value, manual) {
+  // Correzione a mano subito dopo un "imposta": è il feed che sbagliava,
+  // e di quanto. Ce lo ricordiamo per la prossima volta.
+  if (manual && lastSuggested !== null && isLive()) {
+    const target = Math.max(0, Math.min(value, Number(slider.max)));
+    feedBias += target - lastSuggested;
+    lastSuggested = null;
+    saveBias();
+    verdict.textContent = 'correzione memorizzata: ' +
+                          (feedBias > 0 ? '+' : '') + feedBias + ' s';
+  }
   delay = Math.max(0, Math.min(value, Number(slider.max)));
   slider.value = delay;
   secs.textContent = delay;
@@ -301,6 +331,7 @@ async function poll() {
     nextMatch = s.next_match || null;
     renderMatch();
 
+    liveState = s.live_state || 'off';
     liveClock = s.live_match
       ? { seconds: s.live_match.clock_seconds,
           receivedAt: Date.now() / 1000,
@@ -354,15 +385,17 @@ document.getElementById('cmp').addEventListener('click', compare);
 
 applyBtn.addEventListener('click', () => {
   if (pendingTarget === null) return;
-  setDelay(pendingTarget);
-  verdict.textContent = 'allineato';
+  const target = pendingTarget;
+  setDelay(target);
+  lastSuggested = isLive() ? target : null;
+  verdict.textContent = 'allineato' + (isLive() ? ' — se non torna, correggi a mano' : '');
   applyBtn.hidden = true;
   pendingTarget = null;
 });
 
-slider.addEventListener('input', () => setDelay(Number(slider.value)));
-document.getElementById('minus').addEventListener('click', () => setDelay(delay - 1));
-document.getElementById('plus').addEventListener('click', () => setDelay(delay + 1));
+slider.addEventListener('input', () => setDelay(Number(slider.value), true));
+document.getElementById('minus').addEventListener('click', () => setDelay(delay - 1, true));
+document.getElementById('plus').addEventListener('click', () => setDelay(delay + 1, true));
 
 poll();
 setInterval(poll, 2000);
