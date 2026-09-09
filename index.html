@@ -44,6 +44,7 @@
 
   /* cronometro */
   #clockValue { font-size: 40px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #clockNote { font-size: 12px; opacity: .45; min-height: 1.2em; }
   #anchors { display: flex; gap: .6rem; justify-content: center; margin-top: .9rem; }
 
   #compare { margin-top: 1.4rem; display: flex; gap: .6rem; justify-content: center;
@@ -82,8 +83,9 @@
   <button class="pill" id="resync" hidden>risincronizza</button>
 
   <section id="clock">
-    <div class="label">tempo di gioco alla radio</div>
+    <div class="label" id="clockLabel">tempo di gioco</div>
     <div id="clockValue">–:––</div>
+    <div id="clockNote"></div>
 
     <div id="anchors">
       <button class="pill" id="start1">via 1º tempo</button>
@@ -134,7 +136,8 @@ let nextMatch = null;
 // Ancoraggio del cronometro: quando è stato premuto "via", con che ritardo,
 // e da quale minuto di gioco parte (0 o 45).
 let anchor = null;
-let pendingGap = null;
+let pendingTarget = null;
+let liveClock = null;   // {seconds, receivedAt, status} dal feed
 
 function mmss(s) {
   s = Math.max(0, Math.round(s));
@@ -163,9 +166,30 @@ function parseTv(value) {
   return Number(digits.slice(0, -2)) * 60 + s;
 }
 
+// Orologio preso dal feed: il minuto arriva ogni tanto, i secondi li contiamo qui.
+function liveNow() {
+  if (!liveClock) return null;
+  return liveClock.seconds + (Date.now() / 1000 - liveClock.receivedAt);
+}
+
+function isLive() { return liveClock !== null; }
+
+function currentClock() {
+  const l = liveNow();
+  return l === null ? matchClock() : l;
+}
+
 function renderClock() {
-  const t = matchClock();
+  const t = currentClock();
   clockEl.textContent = t === null ? '–:––' : clockText(t);
+
+  const live = isLive();
+  document.getElementById('clockLabel').textContent =
+    live ? 'tempo di gioco · in diretta' : 'tempo di gioco alla radio';
+  document.getElementById('clockNote').textContent =
+    live ? (liveClock.status ? 'dal feed · ' + liveClock.status : 'dal feed')
+         : (anchor ? '' : 'partita non in corso — puoi avviarlo a mano');
+  document.getElementById('anchors').hidden = live;
 }
 
 function setAnchor(base) {
@@ -173,29 +197,48 @@ function setAnchor(base) {
   anchor = { t0: Date.now() / 1000, d0: delay, base: base };
   verdict.textContent = '';
   applyBtn.hidden = true;
-  pendingGap = null;
+  pendingTarget = null;
   renderClock();
 }
 
 function compare() {
-  const mine = matchClock();
+  const mine = currentClock();
   const theirs = parseTv(tvInput.value);
 
   if (mine === null) { verdict.textContent = 'prima avvia il cronometro'; return; }
   if (theirs === null) { verdict.textContent = 'scrivi il tempo della TV, es. 43:20'; return; }
 
-  const gap = Math.round(mine - theirs);   // + = radio avanti, − = radio indietro
-  pendingGap = gap;
+  const gap = Math.round(mine - theirs);
 
+  if (isLive()) {
+    // Il cronometro è il tempo vero della partita: lo scarto è quanto è
+    // indietro la TV, e diventa direttamente il ritardo da impostare.
+    if (gap <= 0) {
+      verdict.textContent = 'la TV non risulta indietro';
+      applyBtn.hidden = true;
+      pendingTarget = null;
+      return;
+    }
+    pendingTarget = Math.min(gap, Number(slider.max));
+    verdict.textContent = 'la TV è indietro di ' + gap + ' s';
+    applyBtn.textContent = 'imposta ' + pendingTarget + ' s';
+    applyBtn.hidden = false;
+    return;
+  }
+
+  // Cronometro ancorato a mano: segna il minuto dell'audio, quindi lo scarto
+  // è una correzione da sommare al ritardo attuale.
   if (gap === 0) {
     verdict.textContent = 'siete allineati';
     applyBtn.hidden = true;
+    pendingTarget = null;
     return;
   }
+  pendingTarget = Math.max(0, Math.min(delay + gap, Number(slider.max)));
   verdict.textContent = gap > 0
     ? 'la radio è avanti di ' + gap + ' s'
     : 'la radio è indietro di ' + (-gap) + ' s';
-  applyBtn.textContent = (gap > 0 ? 'porta a ' : 'porta a ') + (delay + gap) + ' s';
+  applyBtn.textContent = 'porta a ' + pendingTarget + ' s';
   applyBtn.hidden = false;
 }
 
@@ -257,6 +300,13 @@ async function poll() {
     document.title = s.station + ' in differita';
     nextMatch = s.next_match || null;
     renderMatch();
+
+    liveClock = s.live_match
+      ? { seconds: s.live_match.clock_seconds,
+          receivedAt: Date.now() / 1000,
+          status: s.live_match.status }
+      : null;
+    renderClock();
     slider.max = s.max_delay_seconds;
 
     if (delay === null) setDelay(s.default_delay_seconds);
@@ -303,11 +353,11 @@ document.getElementById('start2').addEventListener('click', () => setAnchor(2700
 document.getElementById('cmp').addEventListener('click', compare);
 
 applyBtn.addEventListener('click', () => {
-  if (pendingGap === null) return;
-  setDelay(delay + pendingGap);
+  if (pendingTarget === null) return;
+  setDelay(pendingTarget);
   verdict.textContent = 'allineato';
   applyBtn.hidden = true;
-  pendingGap = null;
+  pendingTarget = null;
 });
 
 slider.addEventListener('input', () => setDelay(Number(slider.value)));

@@ -51,6 +51,18 @@ COMPETITIONS = [c for c in os.environ.get("COMPETITIONS", "SA,CL").split(",") if
 FIXTURE_REFRESH_SECONDS = 1800
 FOOTBALL_API_BASE = os.environ.get("FOOTBALL_API_BASE", "https://api.football-data.org/v4")
 
+# --- live match clock (optional) ---------------------------------------
+# Separate free key from api-football.com: it is the one that carries live
+# in-play data. Without it the page falls back to the manual stopwatch.
+# Budget: the free plan allows 100 calls a day, so one match at 90s costs
+# about 65. Raise LIVE_POLL_SECONDS if you follow more than one a day.
+API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY", "").strip()
+API_FOOTBALL_BASE = os.environ.get("API_FOOTBALL_BASE", "https://v3.football.api-sports.io")
+LIVE_POLL_SECONDS = int(os.environ.get("LIVE_POLL_SECONDS", "90"))
+# When no fixture list is available we cannot tell when a match is on, so we
+# look in rarely: 900s is 96 calls a day, just inside the free allowance.
+LIVE_IDLE_POLL_SECONDS = int(os.environ.get("LIVE_IDLE_POLL_SECONDS", "900"))
+
 # ---------------------------------------------------------------- buffer
 
 
@@ -254,6 +266,112 @@ def fixtures_loop():
         time.sleep(FIXTURE_REFRESH_SECONDS)
 
 
+# ---------------------------------------------------------------- live clock
+
+
+class LiveMatch:
+    """The match clock as read from the feed, plus the moment it was read.
+
+    The feed only reports whole minutes, so we anchor on the instant the
+    minute changes and let the clock run locally from there. That is what
+    turns a coarse, occasional reading into a clock that ticks.
+    """
+
+    def __init__(self):
+        self.anchored_at = None      # server time when this minute was first seen
+        self.anchor_seconds = None   # match seconds at that instant
+        self.status = None           # 1H, HT, 2H, FT...
+        self.home = None
+        self.away = None
+        self.last_error = None
+
+    def clock_seconds(self):
+        if self.anchored_at is None:
+            return None
+        return self.anchor_seconds + (time.time() - self.anchored_at)
+
+    def clear(self):
+        self.anchored_at = None
+        self.anchor_seconds = None
+        self.status = None
+
+
+live = LiveMatch()
+
+
+def in_match_window():
+    """True when a known fixture is under way (or about to be)."""
+    match = fixtures.next_match
+    if not match:
+        return None  # unknown: no fixture list configured
+    try:
+        kickoff = datetime.fromisoformat(match["kickoff_utc"].replace("Z", "+00:00"))
+    except (ValueError, KeyError, TypeError):
+        return None
+    now = datetime.now(timezone.utc)
+    return timedelta(minutes=-5) <= (now - kickoff) <= timedelta(minutes=150)
+
+
+def fetch_live():
+    response = requests.get(
+        f"{API_FOOTBALL_BASE}/fixtures",
+        headers={"x-apisports-key": API_FOOTBALL_KEY},
+        params={"live": "all"},
+        timeout=10,
+    )
+    response.raise_for_status()
+
+    for item in response.json().get("response", []):
+        teams = item.get("teams") or {}
+        home = ((teams.get("home") or {}).get("name")) or ""
+        away = ((teams.get("away") or {}).get("name")) or ""
+        if TEAM_NAME.lower() not in f"{home} {away}".lower():
+            continue
+
+        status = ((item.get("fixture") or {}).get("status")) or {}
+        elapsed = status.get("elapsed")
+        if elapsed is None:
+            continue
+
+        extra = status.get("extra") or 0
+        return {
+            "seconds": (int(elapsed) + int(extra)) * 60,
+            "status": status.get("short"),
+            "home": home,
+            "away": away,
+        }
+    return None
+
+
+def live_loop():
+    while True:
+        window = in_match_window()
+        if window is False:
+            # A fixture is known and it is not now: no reason to spend a call.
+            live.clear()
+            time.sleep(60)
+            continue
+
+        try:
+            found = fetch_live()
+            live.last_error = None
+            if found is None:
+                live.clear()
+            else:
+                # Re-anchor only when the minute actually advances, so the
+                # clock keeps running smoothly instead of stuttering.
+                if found["seconds"] != live.anchor_seconds:
+                    live.anchor_seconds = found["seconds"]
+                    live.anchored_at = time.time()
+                live.status = found["status"]
+                live.home, live.away = found["home"], found["away"]
+        except Exception as exc:  # noqa: BLE001 - never disturb the radio
+            live.last_error = str(exc)
+            app.logger.warning("live lookup failed: %s", exc)
+
+        time.sleep(LIVE_POLL_SECONDS if window else LIVE_IDLE_POLL_SECONDS)
+
+
 # ---------------------------------------------------------------- app
 
 # No static folder: index.html is served explicitly, so nothing else in the
@@ -290,6 +408,16 @@ def status():
         upstream_reconnects=upstream.reconnects,
         uptime_seconds=round(time.time() - upstream.started_at),
         next_match=fixtures.next_match,
+        live_match=(
+            None
+            if live.clock_seconds() is None
+            else {
+                "clock_seconds": round(live.clock_seconds(), 1),
+                "status": live.status,
+                "home": live.home,
+                "away": live.away,
+            }
+        ),
     )
 
 
@@ -345,6 +473,9 @@ threading.Thread(target=upstream_loop, name="upstream", daemon=True).start()
 
 if FOOTBALL_TOKEN:
     threading.Thread(target=fixtures_loop, name="fixtures", daemon=True).start()
+
+if API_FOOTBALL_KEY:
+    threading.Thread(target=live_loop, name="live", daemon=True).start()
 
 
 if __name__ == "__main__":
