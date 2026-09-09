@@ -18,11 +18,9 @@
   }
   main { width: 100%; max-width: 380px; padding: 2rem 1.5rem; text-align: center; }
 
-  #station { font-size: 20px; font-weight: 600; }
-  #match {
-    margin-top: .45rem; font-size: 13px; opacity: .55; line-height: 1.35;
-  }
   #head { margin-bottom: 1.75rem; }
+  #station { font-size: 20px; font-weight: 600; }
+  #match { margin-top: .45rem; font-size: 13px; opacity: .55; line-height: 1.35; }
 
   #btn {
     width: 104px; height: 104px; border-radius: 50%;
@@ -33,14 +31,33 @@
 
   #state { margin-top: .75rem; font-size: 14px; opacity: .75; min-height: 1.5em; }
 
-  #resync {
-    margin-top: .9rem; padding: .55rem 1.1rem; border-radius: 999px;
+  .pill {
+    padding: .55rem 1.1rem; border-radius: 999px;
     border: 1px solid #444; background: none; color: #eee;
     font-size: 13px; letter-spacing: .04em; cursor: pointer;
   }
-  #resync:active { background: #262626; }
+  .pill:active { background: #262626; }
+  #resync { margin-top: .9rem; }
 
-  #tuner { margin-top: 2.25rem; border-top: 1px solid #2a2a2a; padding-top: 1.5rem; }
+  section { margin-top: 2rem; border-top: 1px solid #2a2a2a; padding-top: 1.5rem; }
+  .label { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; opacity: .5; }
+
+  /* cronometro */
+  #clockValue { font-size: 40px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #anchors { display: flex; gap: .6rem; justify-content: center; margin-top: .9rem; }
+
+  #compare { margin-top: 1.4rem; display: flex; gap: .6rem; justify-content: center;
+             align-items: center; }
+  #tv {
+    width: 108px; padding: .6rem; border-radius: 10px;
+    border: 1px solid #444; background: #191919; color: #eee;
+    font: 600 20px/1 system-ui, sans-serif; text-align: center;
+    font-variant-numeric: tabular-nums; -webkit-user-select: text; user-select: text;
+  }
+  #verdict { margin-top: 1rem; font-size: 15px; min-height: 1.6em; }
+  #apply { margin-top: .7rem; border-color: #eee; }
+
+  /* ritardo */
   #row { display: flex; align-items: center; justify-content: center; gap: 1rem; }
   .nudge {
     width: 52px; height: 52px; border-radius: 50%; flex: none;
@@ -50,7 +67,6 @@
   .nudge:active { background: #262626; }
   #amount { flex: 1; }
   #secs { font-size: 34px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  #unit { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; opacity: .5; }
   #slider { width: 100%; margin-top: 1.25rem; accent-color: #eee; }
 </style>
 </head>
@@ -63,34 +79,62 @@
 
   <button id="btn" disabled>&#9654;</button>
   <div id="state">connessione…</div>
-  <button id="resync" hidden>risincronizza</button>
+  <button class="pill" id="resync" hidden>risincronizza</button>
 
-  <div id="tuner">
+  <section id="clock">
+    <div class="label">tempo di gioco alla radio</div>
+    <div id="clockValue">–:––</div>
+
+    <div id="anchors">
+      <button class="pill" id="start1">via 1º tempo</button>
+      <button class="pill" id="start2">via 2º tempo</button>
+    </div>
+
+    <div id="compare">
+      <input id="tv" inputmode="numeric" placeholder="mm:ss" autocomplete="off">
+      <button class="pill" id="cmp">confronta</button>
+    </div>
+
+    <div id="verdict"></div>
+    <button class="pill" id="apply" hidden></button>
+  </section>
+
+  <section id="tuner">
     <div id="row">
       <button class="nudge" id="minus">&minus;</button>
       <div id="amount">
         <div id="secs">–</div>
-        <div id="unit">secondi indietro</div>
+        <div class="label">secondi indietro</div>
       </div>
       <button class="nudge" id="plus">+</button>
     </div>
     <input type="range" id="slider" min="0" max="180" step="1" value="60">
-  </div>
+  </section>
 
   <audio id="audio"></audio>
 </main>
 
 <script>
-const audio  = document.getElementById('audio');
-const btn    = document.getElementById('btn');
-const slider = document.getElementById('slider');
-const secs   = document.getElementById('secs');
+const audio   = document.getElementById('audio');
+const btn     = document.getElementById('btn');
+const slider  = document.getElementById('slider');
+const secs    = document.getElementById('secs');
 const stateEl = document.getElementById('state');
+const clockEl = document.getElementById('clockValue');
+const tvInput = document.getElementById('tv');
+const verdict = document.getElementById('verdict');
+const applyBtn = document.getElementById('apply');
 
-let delay = null;      // seconds behind live
+let delay = null;      // secondi indietro rispetto al vivo
 let ready = false;
 let playing = false;
-let retune = null;     // debounce timer
+let retune = null;     // timer di rimbalzo
+let nextMatch = null;
+
+// Ancoraggio del cronometro: quando è stato premuto "via", con che ritardo,
+// e da quale minuto di gioco parte (0 o 45).
+let anchor = null;
+let pendingGap = null;
 
 function mmss(s) {
   s = Math.max(0, Math.round(s));
@@ -98,7 +142,79 @@ function mmss(s) {
          String(s % 60).padStart(2, '0');
 }
 
-let nextMatch = null;
+function clockText(s) {
+  s = Math.max(0, Math.floor(s));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+// Minuto di gioco dell'audio che sta suonando adesso.
+// Se sposti il cursore l'audio salta, e il termine (delay - anchor.d0) lo recupera.
+function matchClock() {
+  if (!anchor || delay === null) return null;
+  return (Date.now() / 1000 - anchor.t0) - (delay - anchor.d0) + anchor.base;
+}
+
+function parseTv(value) {
+  const digits = (value || '').replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.length <= 2) return Number(digits) * 60;
+  const s = Number(digits.slice(-2));
+  if (s > 59) return null;
+  return Number(digits.slice(0, -2)) * 60 + s;
+}
+
+function renderClock() {
+  const t = matchClock();
+  clockEl.textContent = t === null ? '–:––' : clockText(t);
+}
+
+function setAnchor(base) {
+  if (delay === null) return;
+  anchor = { t0: Date.now() / 1000, d0: delay, base: base };
+  verdict.textContent = '';
+  applyBtn.hidden = true;
+  pendingGap = null;
+  renderClock();
+}
+
+function compare() {
+  const mine = matchClock();
+  const theirs = parseTv(tvInput.value);
+
+  if (mine === null) { verdict.textContent = 'prima avvia il cronometro'; return; }
+  if (theirs === null) { verdict.textContent = 'scrivi il tempo della TV, es. 43:20'; return; }
+
+  const gap = Math.round(mine - theirs);   // + = radio avanti, − = radio indietro
+  pendingGap = gap;
+
+  if (gap === 0) {
+    verdict.textContent = 'siete allineati';
+    applyBtn.hidden = true;
+    return;
+  }
+  verdict.textContent = gap > 0
+    ? 'la radio è avanti di ' + gap + ' s'
+    : 'la radio è indietro di ' + (-gap) + ' s';
+  applyBtn.textContent = (gap > 0 ? 'porta a ' : 'porta a ') + (delay + gap) + ' s';
+  applyBtn.hidden = false;
+}
+
+function connect() {
+  audio.src = '/stream?delay=' + delay + '&t=' + Date.now();
+  audio.play().catch(() => {});
+}
+
+function setDelay(value) {
+  delay = Math.max(0, Math.min(value, Number(slider.max)));
+  slider.value = delay;
+  secs.textContent = delay;
+  if (playing) {
+    clearTimeout(retune);
+    retune = setTimeout(connect, 600);
+  }
+  renderClock();
+  poll();
+}
 
 function renderMatch() {
   const el = document.getElementById('match');
@@ -129,23 +245,6 @@ function renderMatch() {
   el.textContent = nextMatch.home + ' – ' + nextMatch.away + '\n' + when;
   el.style.whiteSpace = 'pre-line';
   el.hidden = false;
-}
-
-function connect() {
-  audio.src = '/stream?delay=' + delay + '&t=' + Date.now();
-  audio.play().catch(() => {});
-}
-
-function setDelay(value) {
-  delay = Math.max(0, Math.min(value, Number(slider.max)));
-  slider.value = delay;
-  secs.textContent = delay;
-  // Reconnect after the tapping stops: the delay is fixed per connection.
-  if (playing) {
-    clearTimeout(retune);
-    retune = setTimeout(connect, 600);
-  }
-  poll();
 }
 
 async function poll() {
@@ -194,10 +293,21 @@ btn.addEventListener('click', () => {
   poll();
 });
 
-// Riaggancia allo stesso ritardo: butta via il buffer accumulato dal browser
-// e riparte esatto sui secondi scelti.
+// Riaggancia allo stesso ritardo: butta via il buffer accumulato dal browser.
 document.getElementById('resync').addEventListener('click', () => {
   if (playing) connect();
+});
+
+document.getElementById('start1').addEventListener('click', () => setAnchor(0));
+document.getElementById('start2').addEventListener('click', () => setAnchor(2700));
+document.getElementById('cmp').addEventListener('click', compare);
+
+applyBtn.addEventListener('click', () => {
+  if (pendingGap === null) return;
+  setDelay(delay + pendingGap);
+  verdict.textContent = 'allineato';
+  applyBtn.hidden = true;
+  pendingGap = null;
 });
 
 slider.addEventListener('input', () => setDelay(Number(slider.value)));
@@ -207,6 +317,7 @@ document.getElementById('plus').addEventListener('click', () => setDelay(delay +
 poll();
 setInterval(poll, 2000);
 setInterval(renderMatch, 1000);
+setInterval(renderClock, 250);
 </script>
 </body>
 </html>
