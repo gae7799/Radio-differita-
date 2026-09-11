@@ -47,9 +47,13 @@
   /* cronometro */
   #clockValue { font-size: 40px; font-weight: 600; font-variant-numeric: tabular-nums; }
   #clockNote { font-size: 12px; opacity: .45; min-height: 1.2em; }
-  #anchors { display: flex; gap: .6rem; justify-content: center; margin-top: .9rem; }
+  #anchors { display: flex; gap: .6rem; justify-content: center; margin-top: .8rem; }
+  #manualToggle {
+    margin-top: 1.2rem; border: 0; background: none; color: #eee;
+    font-size: 12px; opacity: .4; text-decoration: underline; cursor: pointer;
+  }
 
-  #compare { margin-top: 1.4rem; display: flex; gap: .6rem; justify-content: center;
+  #compare { margin-top: 1.3rem; display: flex; gap: .6rem; justify-content: center;
              align-items: center; }
   #tv {
     width: 108px; padding: .6rem; border-radius: 10px;
@@ -89,11 +93,6 @@
     <div id="clockValue">–:––</div>
     <div id="clockNote"></div>
 
-    <div id="anchors">
-      <button class="pill" id="start1">via 1º tempo</button>
-      <button class="pill" id="start2">via 2º tempo</button>
-    </div>
-
     <div id="compare">
       <input id="tv" inputmode="numeric" placeholder="mm:ss" autocomplete="off">
       <button class="pill" id="cmp">confronta</button>
@@ -101,6 +100,12 @@
 
     <div id="verdict"></div>
     <button class="pill" id="apply" hidden></button>
+
+    <button id="manualToggle" hidden>avvia a mano</button>
+    <div id="anchors" hidden>
+      <button class="pill" id="start1">via 1º tempo</button>
+      <button class="pill" id="start2">via 2º tempo</button>
+    </div>
   </section>
 
   <section id="tuner">
@@ -196,22 +201,31 @@ function renderClock() {
 
   const live = isLive();
   document.getElementById('clockLabel').textContent =
-    live ? 'tempo di gioco · in diretta' : 'tempo di gioco alla radio';
+    live ? 'tempo di gioco' : 'tempo di gioco alla radio';
 
   let note;
   if (live) {
-    note = 'dal feed' + (liveClock.status ? ' · ' + liveClock.status : '');
+    note = liveClock.status || 'in diretta';
     if (liveState === 'paused') note += ' · fermo';
+    if (liveClock.uncertainty != null && liveClock.uncertainty > 1)
+      note += ' · ±' + liveClock.uncertainty + ' s';
     if (feedBias) note += ' · correzione ' + (feedBias > 0 ? '+' : '') + feedBias + ' s';
   } else if (liveState === 'stale') {
-    note = 'il feed non risponde — avvialo a mano';
+    note = 'il feed non risponde';
   } else if (anchor) {
     note = 'avviato a mano';
   } else {
-    note = 'partita non in corso — puoi avviarlo a mano';
+    note = 'partita non in corso';
   }
   document.getElementById('clockNote').textContent = note;
-  document.getElementById('anchors').hidden = live;
+
+  // I pulsanti manuali restano nascosti: compaiono solo se il feed non c'è,
+  // e solo dopo che li hai chiesti tu.
+  const manual = document.getElementById('anchors');
+  const toggle = document.getElementById('manualToggle');
+  if (live) { manual.hidden = true; toggle.hidden = true; }
+  else if (!manual.hidden) { toggle.hidden = true; }
+  else { toggle.hidden = false; }
 }
 
 function setAnchor(base) {
@@ -337,6 +351,7 @@ async function poll() {
     liveClock = s.live_match
       ? { seconds: s.live_match.clock_seconds,
           receivedAt: Date.now() / 1000,
+          uncertainty: s.live_match.uncertainty,
           status: s.live_match.status }
       : null;
     renderClock();
@@ -379,6 +394,11 @@ btn.addEventListener('click', () => {
 // Riaggancia allo stesso ritardo: butta via il buffer accumulato dal browser.
 document.getElementById('resync').addEventListener('click', () => {
   if (playing) connect();
+});
+
+document.getElementById('manualToggle').addEventListener('click', () => {
+  document.getElementById('anchors').hidden = false;
+  document.getElementById('manualToggle').hidden = true;
 });
 
 document.getElementById('start1').addEventListener('click', () => setAnchor(0));

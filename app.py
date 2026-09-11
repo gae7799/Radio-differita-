@@ -58,7 +58,9 @@ FOOTBALL_API_BASE = os.environ.get("FOOTBALL_API_BASE", "https://api.football-da
 # about 65. Raise LIVE_POLL_SECONDS if you follow more than one a day.
 API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY", "").strip()
 API_FOOTBALL_BASE = os.environ.get("API_FOOTBALL_BASE", "https://v3.football.api-sports.io")
-LIVE_POLL_SECONDS = int(os.environ.get("LIVE_POLL_SECONDS", "120"))
+# Deliberately not a whole number of minutes: readings then land at different
+# points inside the minute, which is what lets the estimate above converge.
+LIVE_POLL_SECONDS = int(os.environ.get("LIVE_POLL_SECONDS", "97"))
 # When no fixture list is available we cannot tell when a match is on, so we
 # look in rarely: 900s is 96 calls a day, just inside the free allowance.
 LIVE_IDLE_POLL_SECONDS = int(os.environ.get("LIVE_IDLE_POLL_SECONDS", "900"))
@@ -295,6 +297,42 @@ class LiveMatch:
         self.home = None
         self.away = None
         self.last_error = None
+        # Bounds on (match seconds - wall clock). A reading of "minute 61" at
+        # time t only says the true time is somewhere in [61:00, 62:00), i.e.
+        # the offset is in a 60-wide window. Each further reading intersects
+        # that window with the previous one, and because the polling interval
+        # is not a whole number of minutes the windows land at different
+        # points in the minute and the intersection keeps shrinking. A few
+        # readings in and the clock is good to a handful of seconds.
+        self.offset_lo = None
+        self.offset_hi = None
+
+    def observe(self, seconds, status, at):
+        """Fold one reading into the estimate."""
+        phase_changed = status != self.status
+        minute_changed = seconds != self.anchor_seconds
+
+        if minute_changed or phase_changed:
+            self.anchor_seconds = seconds
+            self.anchored_at = at
+
+        lo, hi = seconds - at, seconds + 60 - at
+        if phase_changed or self.offset_lo is None:
+            # Play stopped and restarted: the old relation no longer holds.
+            self.offset_lo, self.offset_hi = lo, hi
+        else:
+            self.offset_lo = max(self.offset_lo, lo)
+            self.offset_hi = min(self.offset_hi, hi)
+            if self.offset_lo >= self.offset_hi:   # contradiction: start over
+                self.offset_lo, self.offset_hi = lo, hi
+
+        self.status = status
+        self.last_seen = at
+
+    def uncertainty(self):
+        if self.offset_lo is None:
+            return None
+        return (self.offset_hi - self.offset_lo) / 2
 
     def clock_seconds(self):
         if self.anchored_at is None or self.last_seen is None:
@@ -307,13 +345,15 @@ class LiveMatch:
             return self.anchor_seconds
         if now - self.anchored_at > STUCK_AFTER:
             return None
-        return self.anchor_seconds + (now - self.anchored_at)
+        return now + (self.offset_lo + self.offset_hi) / 2
 
     def clear(self):
         self.anchored_at = None
         self.anchor_seconds = None
         self.last_seen = None
         self.status = None
+        self.offset_lo = None
+        self.offset_hi = None
 
 
 live = LiveMatch()
@@ -413,16 +453,7 @@ def live_loop():
             else:
                 # Re-anchor only when the minute actually advances, so the
                 # clock keeps running smoothly instead of stuttering.
-                # Re-anchor when the minute advances, and also when the phase
-                # changes: coming out of half time the feed can report 2H
-                # while still saying minute 45, and without this the clock
-                # would stay pinned to an anchor a quarter of an hour old.
-                if (found["seconds"] != live.anchor_seconds
-                        or found["status"] != live.status):
-                    live.anchor_seconds = found["seconds"]
-                    live.anchored_at = time.time()
-                live.last_seen = time.time()
-                live.status = found["status"]
+                live.observe(found["seconds"], found["status"], time.time())
                 live.home, live.away = found["home"], found["away"]
             wait = LIVE_POLL_SECONDS if window else LIVE_IDLE_POLL_SECONDS
         except Exception as exc:  # noqa: BLE001 - never disturb the radio
@@ -487,6 +518,9 @@ def status():
             if live.clock_seconds() is None
             else {
                 "clock_seconds": round(live.clock_seconds(), 1),
+                "uncertainty": (
+                    None if live.uncertainty() is None else round(live.uncertainty())
+                ),
                 "status": live.status,
                 "home": live.home,
                 "away": live.away,
