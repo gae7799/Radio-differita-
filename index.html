@@ -5,120 +5,180 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Radio in differita</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --ground:  #04090E;
+    --panel:   #081219;
+    --line:    #123044;
+    --dim:     #3B7A9C;   /* etichette */
+    --mid:     #6FB6D8;   /* valori secondari */
+    --bright:  #A9DCF7;   /* valori */
+    --hero:    #DCF1FF;   /* cronometro */
+    --azzurro: #23A6E0;   /* l'unica cosa piena */
+    --ink-on-azzurro: #04090E;
+  }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  /* senza questo, un display: flex esplicito vince sull'attributo hidden */
   [hidden] { display: none !important; }
+
   body {
-    /* manipulation = niente zoom col doppio tocco; il pizzico resta attivo */
     touch-action: manipulation;
     -webkit-user-select: none; user-select: none;
     margin: 0; min-height: 100vh;
-    display: flex; align-items: center; justify-content: center;
-    font: 16px/1.5 system-ui, -apple-system, sans-serif;
-    background: #111; color: #eee;
+    display: flex; align-items: stretch; justify-content: center;
+    background: var(--ground); color: var(--bright);
+    font: 400 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
   }
-  main { width: 100%; max-width: 380px; padding: 2rem 1.5rem; text-align: center; }
-
-  #head { margin-bottom: 1.75rem; }
-  #station { font-size: 20px; font-weight: 600; }
-  #match { margin-top: .45rem; font-size: 13px; opacity: .55; line-height: 1.35; }
-
-  #btn {
-    width: 104px; height: 104px; border-radius: 50%;
-    border: 2px solid #eee; background: none; color: #eee;
-    font-size: 36px; line-height: 1; cursor: pointer;
+  main {
+    width: 100%; max-width: 390px;
+    padding: 22px 18px 28px;
+    display: flex; flex-direction: column; gap: 14px;
   }
-  #btn:disabled { opacity: .25; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 0; width: 100%; }
 
-  #state { margin-top: .75rem; font-size: 14px; opacity: .75; min-height: 1.5em; }
-
-  .pill {
-    padding: .55rem 1.1rem; border-radius: 999px;
-    border: 1px solid #444; background: none; color: #eee;
-    font-size: 13px; letter-spacing: .04em; cursor: pointer;
-  }
-  .pill:active { background: #262626; }
-  #resync { margin-top: .9rem; }
-
-  section { margin-top: 2rem; border-top: 1px solid #2a2a2a; padding-top: 1.5rem; }
-  .label { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; opacity: .5; }
+  /* intestazione */
+  .head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  #station { font-weight: 600; letter-spacing: .06em; color: var(--bright); font-size: 13px;
+             text-transform: uppercase; }
+  #match { color: var(--dim); font-size: 12px; text-align: right; white-space: pre-line;
+           line-height: 1.35; }
 
   /* cronometro */
-  #clockValue { font-size: 40px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  #clockNote { font-size: 12px; opacity: .45; min-height: 1.2em; }
-  #anchors { display: flex; gap: .6rem; justify-content: center; margin-top: .8rem; }
-  #manualToggle {
-    margin-top: 1.2rem; border: 0; background: none; color: #eee;
-    font-size: 12px; opacity: .4; text-decoration: underline; cursor: pointer;
+  /* Lo spazio che avanza non si accumula in una fascia morta sopra i comandi:
+     lo assorbono il cronometro e un respiro prima del fondo, così il vuoto
+     è distribuito e voluto. */
+  .clockbox {
+    text-align: center; padding: 4px 0 2px; min-height: 120px;
+    flex: 1.4 1 0; display: flex; flex-direction: column; justify-content: center;
   }
+  .breathe { flex: 1 1 0; min-height: 8px; }
+  #clockLabel { color: var(--dim); font-size: 10.5px; letter-spacing: .22em; text-transform: uppercase; }
+  #clockValue { color: var(--hero); font-size: 58px; font-weight: 500; line-height: 1.05;
+                letter-spacing: -.02em; }
+  #clockNote { color: var(--dim); font-size: 11.5px; letter-spacing: .08em; min-height: 1.3em; }
 
-  #compare { margin-top: 1.3rem; display: flex; gap: .6rem; justify-content: center;
-             align-items: center; }
+  /* righe di lettura */
+  .rows { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: baseline; }
+  .rows dt { color: var(--dim); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+  .rows dd { margin: 0; color: var(--mid); font-size: 13.5px; text-align: right; font-weight: 500; }
+  .rows dd.on { color: var(--bright); }
+
+  /* confronto con la TV */
+  .tvrow { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; }
+  .tvrow > .lab { color: var(--dim); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
   #tv {
-    width: 108px; padding: .6rem; border-radius: 10px;
-    border: 1px solid #444; background: #191919; color: #eee;
-    font: 600 20px/1 system-ui, sans-serif; text-align: center;
+    width: 92px; padding: 8px 6px; border-radius: 4px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--hero);
+    font: 600 18px/1 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center;
     font-variant-numeric: tabular-nums; -webkit-user-select: text; user-select: text;
   }
-  #verdict { margin-top: 1rem; font-size: 15px; min-height: 1.6em; }
-  #apply { margin-top: .7rem; border-color: #eee; }
-
-  /* ritardo */
-  #row { display: flex; align-items: center; justify-content: center; gap: 1rem; }
-  .nudge {
-    width: 52px; height: 52px; border-radius: 50%; flex: none;
-    border: 1px solid #444; background: none; color: #eee;
-    font-size: 22px; line-height: 1; cursor: pointer;
+  .btn {
+    font: 500 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .1em; text-transform: uppercase;
+    padding: 10px 12px; border-radius: 4px; cursor: pointer;
+    border: 1px solid var(--line); background: none; color: var(--mid);
   }
-  .nudge:active { background: #262626; }
-  #amount { flex: 1; }
-  #secs { font-size: 34px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  #slider { width: 100%; margin-top: 1.25rem; accent-color: #eee; }
+  .btn:active { background: var(--panel); }
+  #verdict { color: var(--bright); font-size: 12.5px; min-height: 1.4em; letter-spacing: .04em; }
+  #apply {
+    width: 100%; padding: 13px; border: 0; border-radius: 4px;
+    background: var(--azzurro); color: var(--ink-on-azzurro);
+    font: 600 14px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .1em; text-transform: uppercase;
+    cursor: pointer;
+  }
+  #apply:active { filter: brightness(.9); }
+
+  /* comandi in basso, dove arriva il pollice */
+  .foot { display: flex; flex-direction: column; gap: 12px; }
+  .transport { display: flex; align-items: center; gap: 14px; }
+  #btn {
+    width: 54px; height: 54px; flex: none; border-radius: 50%;
+    border: 1px solid var(--mid); background: none; color: var(--bright);
+    font-size: 17px; line-height: 1; cursor: pointer;
+  }
+  #btn:disabled { opacity: .3; cursor: default; }
+  .transport .who { flex: 1; text-align: left; }
+  #secs { color: var(--hero); font-size: 30px; font-weight: 500; line-height: 1; }
+  #secs small { font-size: 13px; color: var(--dim); font-weight: 400; margin-left: 4px; }
+  #state { color: var(--dim); font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+           min-height: 1.3em; }
+  .steps { display: flex; gap: 8px; }
+  .nudge {
+    width: 44px; height: 44px; border-radius: 4px; flex: none;
+    border: 1px solid var(--line); background: none; color: var(--mid);
+    font: 400 18px/1 ui-monospace, SFMono-Regular, Menlo, monospace; cursor: pointer;
+  }
+  .nudge:active { background: var(--panel); }
+  #slider { width: 100%; accent-color: var(--azzurro); }
+
+  #resync { align-self: flex-start; }
+  .postilla { margin: 2px 0 0; color: var(--line); font-size: 10.5px; line-height: 1.6;
+              letter-spacing: .02em; }
+  #manualToggle { border: 0; background: none; color: var(--dim); font: inherit; font-size: 11px;
+                  letter-spacing: .1em; text-transform: uppercase; text-decoration: underline;
+                  cursor: pointer; padding: 0; }
+  #anchors { display: flex; gap: 8px; }
+
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--azzurro); outline-offset: 2px; }
 </style>
 </head>
 <body>
 <main>
-  <div id="head">
+
+  <div class="head">
     <div id="station">&nbsp;</div>
     <div id="match" hidden></div>
   </div>
+  <hr>
 
-  <button id="btn" disabled>&#9654;</button>
-  <div id="state">connessione…</div>
-  <button class="pill" id="resync" hidden>risincronizza</button>
-
-  <section id="clock">
-    <div class="label" id="clockLabel">tempo di gioco</div>
-    <div id="clockValue">–:––</div>
+  <div class="clockbox">
+    <div id="clockLabel">tempo di gioco</div>
+    <div id="clockValue">--:--</div>
     <div id="clockNote"></div>
+  </div>
+  <hr>
 
-    <div id="compare">
-      <input id="tv" inputmode="numeric" placeholder="mm:ss" autocomplete="off">
-      <button class="pill" id="cmp">confronta</button>
-    </div>
+  <dl class="rows">
+    <dt>buffer</dt><dd id="rBuffer">--</dd>
+    <dt>upstream</dt><dd id="rUpstream">--</dd>
+    <dt>scarto</dt><dd id="rGap">--</dd>
+  </dl>
+  <hr>
 
-    <div id="verdict"></div>
-    <button class="pill" id="apply" hidden></button>
+  <div class="tvrow">
+    <span class="lab">tv</span>
+    <input id="tv" inputmode="numeric" placeholder="mm:ss" autocomplete="off" aria-label="tempo mostrato dalla TV">
+    <button class="btn" id="cmp">confronta</button>
+  </div>
+  <div id="verdict"></div>
+  <button id="apply" hidden></button>
 
-    <button id="manualToggle" hidden>avvia a mano</button>
-    <div id="anchors" hidden>
-      <button class="pill" id="start1">via 1º tempo</button>
-      <button class="pill" id="start2">via 2º tempo</button>
-    </div>
-  </section>
+  <button class="btn" id="manualToggle" hidden>avvia a mano</button>
+  <div id="anchors" hidden>
+    <button class="btn" id="start1">via 1º tempo</button>
+    <button class="btn" id="start2">via 2º tempo</button>
+  </div>
 
-  <section id="tuner">
-    <div id="row">
-      <button class="nudge" id="minus">&minus;</button>
-      <div id="amount">
-        <div id="secs">–</div>
-        <div class="label">secondi indietro</div>
+  <div class="breathe"></div>
+
+  <div class="foot">
+    <hr>
+    <div class="transport">
+      <button id="btn" disabled>&#9654;</button>
+      <div class="who">
+        <div id="secs">--<small>s indietro</small></div>
+        <div id="state">connessione</div>
       </div>
-      <button class="nudge" id="plus">+</button>
+      <div class="steps">
+        <button class="nudge" id="minus" aria-label="un secondo in meno">&minus;</button>
+        <button class="nudge" id="plus" aria-label="un secondo in più">+</button>
+      </div>
     </div>
-    <input type="range" id="slider" min="0" max="180" step="1" value="60">
-  </section>
+    <input type="range" id="slider" min="0" max="180" step="1" value="60" aria-label="ritardo in secondi">
+    <button class="btn" id="resync" hidden>risincronizza</button>
+
+    <p class="postilla">// serve che la TV arrivi dopo la radio: il ritardo si aggiunge, non si toglie
+      <br>// margine utile da 20 s in su — se la TV è più veloce, non c'è ritardo che tenga</p>
+  </div>
 
   <audio id="audio"></audio>
 </main>
@@ -134,45 +194,37 @@ const tvInput = document.getElementById('tv');
 const verdict = document.getElementById('verdict');
 const applyBtn = document.getElementById('apply');
 
-let delay = null;      // secondi indietro rispetto al vivo
+let delay = null;
 let ready = false;
 let playing = false;
-let retune = null;     // timer di rimbalzo
+let retune = null;
 let nextMatch = null;
 
-// Ancoraggio del cronometro: quando è stato premuto "via", con che ritardo,
-// e da quale minuto di gioco parte (0 o 45).
 let anchor = null;
 let pendingTarget = null;
-let liveClock = null;   // {seconds, receivedAt, status} dal feed
+let liveClock = null;
 let liveState = 'off';
 
-// Il feed ha un suo ritardo, e anche lo streaming radio ce l'ha. La differenza
-// fra i due è una costante che non possiamo calcolare: la impariamo da te.
-// Quando dopo un "imposta" correggi a mano, quella correzione ce la teniamo.
 let feedBias = 0;
+let feedBiasLearned = false;
 let lastSuggested = null;
-try { feedBias = Number(localStorage.getItem('feedBias')) || 0; } catch (e) {}
-function saveBias() { try { localStorage.setItem('feedBias', String(feedBias)); } catch (e) {} }
+try {
+  const stored = localStorage.getItem('feedBias');
+  if (stored !== null) { feedBias = Number(stored) || 0; feedBiasLearned = true; }
+} catch (e) {}
+function saveBias() {
+  feedBiasLearned = true;
+  try { localStorage.setItem('feedBias', String(feedBias)); } catch (e) {}
+}
 
 function mmss(s) {
   s = Math.max(0, Math.round(s));
-  return String(Math.floor(s / 60)).padStart(2, '0') + ':' +
-         String(s % 60).padStart(2, '0');
+  return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
 }
-
 function clockText(s) {
   s = Math.max(0, Math.floor(s));
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 }
-
-// Minuto di gioco dell'audio che sta suonando adesso.
-// Se sposti il cursore l'audio salta, e il termine (delay - anchor.d0) lo recupera.
-function matchClock() {
-  if (!anchor || delay === null) return null;
-  return (Date.now() / 1000 - anchor.t0) - (delay - anchor.d0) + anchor.base;
-}
-
 function parseTv(value) {
   const digits = (value || '').replace(/\D/g, '');
   if (!digits) return null;
@@ -182,14 +234,15 @@ function parseTv(value) {
   return Number(digits.slice(0, -2)) * 60 + s;
 }
 
-// Orologio preso dal feed: il minuto arriva ogni tanto, i secondi li contiamo qui.
 function liveNow() {
   if (!liveClock) return null;
   return liveClock.seconds + (Date.now() / 1000 - liveClock.receivedAt);
 }
-
 function isLive() { return liveClock !== null; }
-
+function matchClock() {
+  if (!anchor || delay === null) return null;
+  return (Date.now() / 1000 - anchor.t0) - (delay - anchor.d0) + anchor.base;
+}
 function currentClock() {
   const l = liveNow();
   return l === null ? matchClock() : l;
@@ -197,9 +250,9 @@ function currentClock() {
 
 function renderClock() {
   const t = currentClock();
-  clockEl.textContent = t === null ? '–:––' : clockText(t);
-
+  clockEl.textContent = t === null ? '--:--' : clockText(t);
   const live = isLive();
+
   document.getElementById('clockLabel').textContent =
     live ? 'tempo di gioco' : 'tempo di gioco alla radio';
 
@@ -207,11 +260,9 @@ function renderClock() {
   if (live) {
     note = liveClock.status || 'in diretta';
     if (liveState === 'paused') note += ' · fermo';
-    if (liveClock.uncertainty != null && liveClock.uncertainty > 1)
-      note += ' · ±' + liveClock.uncertainty + ' s';
-    if (feedBias) note += ' · correzione ' + (feedBias > 0 ? '+' : '') + feedBias + ' s';
+    if (liveClock.uncertainty != null && liveClock.uncertainty > 1) note += ' · ±' + liveClock.uncertainty + ' s';
   } else if (liveState === 'stale') {
-    note = 'il feed non risponde';
+    note = 'feed muto';
   } else if (anchor) {
     note = 'avviato a mano';
   } else {
@@ -219,8 +270,6 @@ function renderClock() {
   }
   document.getElementById('clockNote').textContent = note;
 
-  // I pulsanti manuali restano nascosti: compaiono solo se il feed non c'è,
-  // e solo dopo che li hai chiesti tu.
   const manual = document.getElementById('anchors');
   const toggle = document.getElementById('manualToggle');
   if (live) { manual.hidden = true; toggle.hidden = true; }
@@ -237,43 +286,72 @@ function setAnchor(base) {
   renderClock();
 }
 
+function setDelay(value, manual) {
+  if (manual && lastSuggested !== null && isLive()) {
+    const target = Math.max(0, Math.min(value, Number(slider.max)));
+    feedBias += target - lastSuggested;
+    lastSuggested = null;
+    saveBias();
+  }
+  delay = Math.max(0, Math.min(value, Number(slider.max)));
+  slider.value = delay;
+  secs.innerHTML = delay + '<small>s indietro</small>';
+  if (playing) { clearTimeout(retune); retune = setTimeout(connect, 600); }
+  renderClock();
+  poll();
+}
+
+const MEASURE_TTL = 180;
+let measures = [];
+function median(values) {
+  const v = values.slice().sort((a, b) => a - b);
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+
 function compare() {
   const mine = currentClock();
   const theirs = parseTv(tvInput.value);
-
   if (mine === null) { verdict.textContent = 'prima avvia il cronometro'; return; }
   if (theirs === null) { verdict.textContent = 'scrivi il tempo della TV, es. 43:20'; return; }
 
-  const gap = Math.round(mine - theirs);
+  const now = Date.now() / 1000;
+  const gapNow = mine - theirs;
 
   if (isLive()) {
-    // Il cronometro è il tempo vero della partita: lo scarto è quanto è
-    // indietro la TV, e diventa direttamente il ritardo da impostare.
-    if (gap <= 0) {
-      verdict.textContent = 'la TV non risulta indietro';
-      applyBtn.hidden = true;
-      pendingTarget = null;
-      return;
+    measures = measures.filter(m => now - m.at < MEASURE_TTL);
+    measures.push({ gap: gapNow, at: now });
+    const gap = median(measures.map(m => m.gap));
+    const target = Math.round(gap + feedBias);
+
+    document.getElementById('rGap').textContent =
+      (gap >= 0 ? '+' : '−') + Math.abs(Math.round(gap)) + ' s';
+    document.getElementById('rGap').classList.add('on');
+
+    if (target < 0) {
+      verdict.textContent = 'la radio è già indietro rispetto alla TV';
+      applyBtn.hidden = true; pendingTarget = null; return;
     }
-    pendingTarget = Math.max(0, Math.min(gap + feedBias, Number(slider.max)));
-    verdict.textContent = 'la TV è indietro di ' + gap + ' s';
-    applyBtn.textContent = 'imposta ' + pendingTarget + ' s';
+    pendingTarget = Math.max(0, Math.min(target, Number(slider.max)));
+    const rough = liveClock.uncertainty != null && liveClock.uncertainty > 8;
+    verdict.textContent = (gap >= 0 ? 'la TV è indietro di ' : 'la TV è avanti di ')
+                        + Math.abs(Math.round(gap)) + ' s'
+                        + (measures.length > 1 ? ' · ' + measures.length + ' misure' : '');
+    applyBtn.textContent = 'imposta ' + (rough ? '~' : '') + pendingTarget + ' s';
     applyBtn.hidden = false;
     return;
   }
 
-  // Cronometro ancorato a mano: segna il minuto dell'audio, quindi lo scarto
-  // è una correzione da sommare al ritardo attuale.
+  const gap = Math.round(gapNow);
+  document.getElementById('rGap').textContent = (gap >= 0 ? '+' : '−') + Math.abs(gap) + ' s';
+  document.getElementById('rGap').classList.add('on');
   if (gap === 0) {
     verdict.textContent = 'siete allineati';
-    applyBtn.hidden = true;
-    pendingTarget = null;
-    return;
+    applyBtn.hidden = true; pendingTarget = null; return;
   }
   pendingTarget = Math.max(0, Math.min(delay + gap, Number(slider.max)));
-  verdict.textContent = gap > 0
-    ? 'la radio è avanti di ' + gap + ' s'
-    : 'la radio è indietro di ' + (-gap) + ' s';
+  verdict.textContent = gap > 0 ? 'la radio è avanti di ' + gap + ' s'
+                                : 'la radio è indietro di ' + (-gap) + ' s';
   applyBtn.textContent = 'porta a ' + pendingTarget + ' s';
   applyBtn.hidden = false;
 }
@@ -283,134 +361,94 @@ function connect() {
   audio.play().catch(() => {});
 }
 
-function setDelay(value, manual) {
-  // Correzione a mano subito dopo un "imposta": è il feed che sbagliava,
-  // e di quanto. Ce lo ricordiamo per la prossima volta.
-  if (manual && lastSuggested !== null && isLive()) {
-    const target = Math.max(0, Math.min(value, Number(slider.max)));
-    feedBias += target - lastSuggested;
-    lastSuggested = null;
-    saveBias();
-    verdict.textContent = 'correzione memorizzata: ' +
-                          (feedBias > 0 ? '+' : '') + feedBias + ' s';
-  }
-  delay = Math.max(0, Math.min(value, Number(slider.max)));
-  slider.value = delay;
-  secs.textContent = delay;
-  if (playing) {
-    clearTimeout(retune);
-    retune = setTimeout(connect, 600);
-  }
-  renderClock();
-  poll();
-}
-
 function renderMatch() {
   const el = document.getElementById('match');
   if (!nextMatch) { el.hidden = true; return; }
-
   const kickoff = new Date(nextMatch.kickoff_utc);
   const left = (kickoff - new Date()) / 1000;
   let when;
-
   if (left <= 0) {
     when = 'in corso';
+  } else if (left < 3600) {
+    when = 'fra ' + mmss(left);
+  } else if (left < 86400) {
+    when = 'fra ' + Math.floor(left / 3600) + 'h ' + Math.floor((left % 3600) / 60) + 'm';
   } else {
-    const quando = kickoff.toLocaleString('it-IT', {
-      weekday: 'long', day: 'numeric', month: 'long',
-      hour: '2-digit', minute: '2-digit'
-    });
-    if (left < 3600) {
-      when = quando + ' · tra ' + mmss(left);
-    } else if (left < 86400) {
-      when = quando + ' · tra ' + Math.floor(left / 3600) + 'h ' +
-             Math.floor((left % 3600) / 60) + 'm';
-    } else {
-      const g = Math.round(left / 86400);
-      when = quando + ' · tra ' + g + (g === 1 ? ' giorno' : ' giorni');
-    }
+    const g = Math.round(left / 86400);
+    when = 'fra ' + g + (g === 1 ? ' giorno' : ' giorni');
   }
-
   el.textContent = nextMatch.home + ' – ' + nextMatch.away + '\n' + when;
-  el.style.whiteSpace = 'pre-line';
   el.hidden = false;
 }
 
 async function poll() {
   try {
-    const r = await fetch('/status?delay=' + (delay === null ? '' : delay),
-                          { cache: 'no-store' });
+    const r = await fetch('/status?delay=' + (delay === null ? '' : delay), { cache: 'no-store' });
     const s = await r.json();
 
     document.getElementById('station').textContent = s.station;
     document.title = s.station + ' in differita';
     nextMatch = s.next_match || null;
     renderMatch();
+    slider.max = s.max_delay_seconds;
+    if (!feedBiasLearned && s.feed_bias != null) feedBias = s.feed_bias;
 
     liveState = s.live_state || 'off';
     liveClock = s.live_match
-      ? { seconds: s.live_match.clock_seconds,
-          receivedAt: Date.now() / 1000,
-          uncertainty: s.live_match.uncertainty,
-          status: s.live_match.status }
+      ? { seconds: s.live_match.clock_seconds, receivedAt: Date.now() / 1000,
+          uncertainty: s.live_match.uncertainty, status: s.live_match.status }
       : null;
-    renderClock();
-    slider.max = s.max_delay_seconds;
 
     if (delay === null) setDelay(s.default_delay_seconds);
+    renderClock();
+
+    document.getElementById('rBuffer').textContent = Math.round(s.buffer_seconds) + ' s';
+    document.getElementById('rUpstream').textContent =
+      (s.upstream_connected ? 'ok' : 'giù') + ' · ' + s.upstream_reconnects + ' drop';
+    document.getElementById('rUpstream').classList.toggle('on', !s.upstream_connected);
 
     ready = s.ready;
     btn.disabled = !s.ready;
     document.getElementById('resync').hidden = !playing;
 
-    if (!s.ready) {
-      stateEl.textContent = 'in buffering, pronto tra ' + mmss(delay - s.buffer_seconds);
-    } else if (!playing) {
-      stateEl.textContent = s.upstream_connected ? 'pronto' : 'pronto (upstream giù)';
-    } else {
-      stateEl.textContent = s.upstream_connected ? 'in onda' : 'upstream giù';
-    }
+    if (!s.ready) stateEl.textContent = 'buffering · ' + mmss(delay - s.buffer_seconds);
+    else if (!playing) stateEl.textContent = 'pronto';
+    else stateEl.textContent = s.upstream_connected ? 'in onda' : 'upstream giù';
   } catch (e) {
-    stateEl.textContent = 'server non raggiungibile';
+    stateEl.textContent = 'server irraggiungibile';
     btn.disabled = true;
   }
 }
 
 btn.addEventListener('click', () => {
   if (playing) {
-    audio.pause();
-    audio.removeAttribute('src');
-    audio.load();
-    playing = false;
-    btn.innerHTML = '&#9654;';
+    audio.pause(); audio.removeAttribute('src'); audio.load();
+    playing = false; btn.innerHTML = '&#9654;';
   } else if (ready) {
-    playing = true;
-    btn.innerHTML = '&#10073;&#10073;';
-    connect();
+    playing = true; btn.innerHTML = '&#10073;&#10073;'; connect();
   }
   poll();
 });
-
-// Riaggancia allo stesso ritardo: butta via il buffer accumulato dal browser.
-document.getElementById('resync').addEventListener('click', () => {
-  if (playing) connect();
-});
-
+document.getElementById('resync').addEventListener('click', () => { if (playing) connect(); });
 document.getElementById('manualToggle').addEventListener('click', () => {
   document.getElementById('anchors').hidden = false;
   document.getElementById('manualToggle').hidden = true;
 });
-
 document.getElementById('start1').addEventListener('click', () => setAnchor(0));
 document.getElementById('start2').addEventListener('click', () => setAnchor(2700));
-document.getElementById('cmp').addEventListener('click', compare);
+
+const cmpBtn = document.getElementById('cmp');
+tvInput.addEventListener('input', () => {
+  cmpBtn.textContent = parseTv(tvInput.value) === null ? 'confronta' : 'adesso';
+});
+cmpBtn.addEventListener('click', compare);
 
 applyBtn.addEventListener('click', () => {
   if (pendingTarget === null) return;
   const target = pendingTarget;
   setDelay(target);
   lastSuggested = isLive() ? target : null;
-  verdict.textContent = 'allineato' + (isLive() ? ' — se non torna, correggi a mano' : '');
+  verdict.textContent = 'allineato';
   applyBtn.hidden = true;
   pendingTarget = null;
 });
