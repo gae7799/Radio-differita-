@@ -65,6 +65,14 @@ LIVE_POLL_SECONDS = int(os.environ.get("LIVE_POLL_SECONDS", "97"))
 # look in rarely: 900s is 96 calls a day, just inside the free allowance.
 LIVE_IDLE_POLL_SECONDS = int(os.environ.get("LIVE_IDLE_POLL_SECONDS", "900"))
 
+# Both sides of "feed clock minus TV clock" arrive late: the feed by some
+# amount, the radio stream by another. Only the difference survives the
+# subtraction, and it is a property of this feed and this stream — the same
+# for every listener, unlike the delay of their own television. Measured at
+# 30s from a real match; refine it at the restart of a second half, where the
+# true clock is known to be exactly 45:00.
+FEED_BIAS_SECONDS = int(os.environ.get("FEED_BIAS_SECONDS", "30"))
+
 # ---------------------------------------------------------------- buffer
 
 
@@ -509,6 +517,7 @@ def status():
         delay_seconds=round(delay),
         default_delay_seconds=DEFAULT_DELAY_SECONDS,
         max_delay_seconds=MAX_DELAY_SECONDS,
+        feed_bias=FEED_BIAS_SECONDS,
         station=STATION_NAME,
         upstream_reconnects=upstream.reconnects,
         uptime_seconds=round(time.time() - upstream.started_at),
