@@ -43,6 +43,11 @@
   #match { color: var(--dim); font-size: 12px; text-align: right; white-space: pre-line;
            line-height: 1.35; }
 
+  /* allarme: l'upstream giù sale in vista, altrimenti sta in fondo */
+  #alarm { color: var(--ink-on-azzurro); background: var(--azzurro); border-radius: 4px;
+           padding: 8px 10px; font-size: 12px; font-weight: 600; letter-spacing: .08em;
+           text-transform: uppercase; }
+
   /* cronometro */
   /* Lo spazio che avanza non si accumula in una fascia morta sopra i comandi:
      lo assorbono il cronometro e un respiro prima del fondo, così il vuoto
@@ -54,14 +59,18 @@
   .breathe { flex: 1 1 0; min-height: 8px; }
   #clockLabel { color: var(--dim); font-size: 10.5px; letter-spacing: .22em; text-transform: uppercase; }
   #clockValue { color: var(--hero); font-size: 58px; font-weight: 500; line-height: 1.05;
-                letter-spacing: -.02em; }
-  #clockNote { color: var(--dim); font-size: 11.5px; letter-spacing: .08em; min-height: 1.3em; }
+                letter-spacing: -.02em; white-space: nowrap; }
+  #clockNote { color: var(--dim); font-size: 11.5px; letter-spacing: .08em; min-height: 1.3em;
+               white-space: pre-line; }
+  #radioTime { color: var(--mid); font-size: 15px; letter-spacing: .06em; margin-top: 6px; }
+  #radioTime b { color: var(--bright); font-weight: 500; }
 
-  /* righe di lettura */
-  .rows { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: baseline; }
-  .rows dt { color: var(--dim); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
-  .rows dd { margin: 0; color: var(--mid); font-size: 13.5px; text-align: right; font-weight: 500; }
-  .rows dd.on { color: var(--bright); }
+  /* scarto + apertura del confronto TV */
+  .gaprow { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .gaprow .lab { color: var(--dim); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+  .gaprow .val { color: var(--mid); font-size: 13.5px; font-weight: 500; margin-left: 10px; }
+  .gaprow .val.on { color: var(--bright); }
+  .gaprow .left { display: flex; align-items: baseline; }
 
   /* confronto con la TV */
   .tvrow { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; }
@@ -78,6 +87,7 @@
     border: 1px solid var(--line); background: none; color: var(--mid);
   }
   .btn:active { background: var(--panel); }
+  #tvBlock { display: flex; flex-direction: column; gap: 10px; }
   #verdict { color: var(--bright); font-size: 12.5px; min-height: 1.4em; letter-spacing: .04em; }
   #apply {
     width: 100%; padding: 13px; border: 0; border-radius: 4px;
@@ -111,12 +121,17 @@
   #slider { width: 100%; accent-color: var(--azzurro); }
 
   #resync { align-self: flex-start; }
-  .postilla { margin: 2px 0 0; color: var(--line); font-size: 10.5px; line-height: 1.6;
+  .postilla { margin: 2px 0 0; color: var(--dim); font-size: 10.5px; line-height: 1.6;
               letter-spacing: .02em; }
   #manualToggle { border: 0; background: none; color: var(--dim); font: inherit; font-size: 11px;
                   letter-spacing: .1em; text-transform: uppercase; text-decoration: underline;
-                  cursor: pointer; padding: 0; }
+                  cursor: pointer; padding: 0; align-self: flex-start; }
   #anchors { display: flex; gap: 8px; }
+
+  /* diagnostica: piccola, in fondo */
+  .diag { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: baseline; margin: 0; }
+  .diag dt { color: var(--dim); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; }
+  .diag dd { margin: 0; color: var(--mid); font-size: 11.5px; text-align: right; }
 
   button:focus-visible, input:focus-visible { outline: 2px solid var(--azzurro); outline-offset: 2px; }
 </style>
@@ -128,29 +143,31 @@
     <div id="station">&nbsp;</div>
     <div id="match" hidden></div>
   </div>
+  <div id="alarm" hidden>upstream giù · riconnessione in corso</div>
   <hr>
 
   <div class="clockbox">
     <div id="clockLabel">tempo di gioco</div>
     <div id="clockValue">--:--</div>
     <div id="clockNote"></div>
+    <div id="radioTime" hidden></div>
   </div>
   <hr>
 
-  <dl class="rows">
-    <dt>buffer</dt><dd id="rBuffer">--</dd>
-    <dt>upstream</dt><dd id="rUpstream">--</dd>
-    <dt>scarto</dt><dd id="rGap">--</dd>
-  </dl>
-  <hr>
-
-  <div class="tvrow">
-    <span class="lab">tv</span>
-    <input id="tv" inputmode="numeric" placeholder="mm:ss" autocomplete="off" aria-label="tempo mostrato dalla TV">
-    <button class="btn" id="cmp">confronta</button>
+  <div class="gaprow">
+    <div class="left"><span class="lab">scarto</span><span class="val" id="rGap">--</span></div>
+    <button class="btn" id="tvToggle">tv</button>
   </div>
-  <div id="verdict"></div>
-  <button id="apply" hidden></button>
+
+  <div id="tvBlock">
+    <div class="tvrow">
+      <span class="lab">tv</span>
+      <input id="tv" inputmode="numeric" placeholder="mm:ss" autocomplete="off" aria-label="tempo mostrato dalla TV">
+      <button class="btn" id="cmp">confronta</button>
+    </div>
+    <div id="verdict"></div>
+    <button id="apply" hidden></button>
+  </div>
 
   <button class="btn" id="manualToggle" hidden>avvia a mano</button>
   <div id="anchors" hidden>
@@ -178,6 +195,11 @@
 
     <p class="postilla">// serve che la TV arrivi dopo la radio: il ritardo si aggiunge, non si toglie
       <br>// margine utile da 20 s in su — se la TV è più veloce, non c'è ritardo che tenga</p>
+
+    <dl class="diag">
+      <dt>buffer</dt><dd id="rBuffer">--</dd>
+      <dt>upstream</dt><dd id="rUpstream">--</dd>
+    </dl>
   </div>
 
   <audio id="audio"></audio>
@@ -193,6 +215,9 @@ const clockEl = document.getElementById('clockValue');
 const tvInput = document.getElementById('tv');
 const verdict = document.getElementById('verdict');
 const applyBtn = document.getElementById('apply');
+const tvBlock = document.getElementById('tvBlock');
+const tvToggle = document.getElementById('tvToggle');
+const radioTimeEl = document.getElementById('radioTime');
 
 let delay = null;
 let ready = false;
@@ -234,6 +259,22 @@ function parseTv(value) {
   return Number(digits.slice(0, -2)) * 60 + s;
 }
 
+/* conto alla rovescia grande, per il cronometro quando la partita non è ancora iniziata */
+function countdownBig(left) {
+  left = Math.max(0, Math.floor(left));
+  const g = Math.floor(left / 86400);
+  const h = Math.floor((left % 86400) / 3600);
+  const m = Math.floor((left % 3600) / 60);
+  const s = left % 60;
+  if (g >= 1) return g + 'g ' + String(h).padStart(2, '0') + 'h';
+  if (h >= 1) return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+function kickoffLeft() {
+  if (!nextMatch) return null;
+  return (new Date(nextMatch.kickoff_utc) - new Date()) / 1000;
+}
+
 function liveNow() {
   if (!liveClock) return null;
   return liveClock.seconds + (Date.now() / 1000 - liveClock.receivedAt);
@@ -250,25 +291,43 @@ function currentClock() {
 
 function renderClock() {
   const t = currentClock();
-  clockEl.textContent = t === null ? '--:--' : clockText(t);
   const live = isLive();
+  const left = kickoffLeft();
+  const pre = t === null && left !== null && left > 0;
 
-  document.getElementById('clockLabel').textContent =
-    live ? 'tempo di gioco' : 'tempo di gioco alla radio';
-
-  let note;
-  if (live) {
-    note = liveClock.status || 'in diretta';
-    if (liveState === 'paused') note += ' · fermo';
-    if (liveClock.uncertainty != null && liveClock.uncertainty > 1) note += ' · ±' + liveClock.uncertainty + ' s';
-  } else if (liveState === 'stale') {
-    note = 'feed muto';
-  } else if (anchor) {
-    note = 'avviato a mano';
+  if (pre) {
+    document.getElementById('clockLabel').textContent = 'prossima partita';
+    clockEl.textContent = countdownBig(left);
+    document.getElementById('clockNote').textContent =
+      nextMatch.home + ' – ' + nextMatch.away;
+    radioTimeEl.hidden = true;
   } else {
-    note = 'partita non in corso';
+    clockEl.textContent = t === null ? '--:--' : clockText(t);
+    document.getElementById('clockLabel').textContent =
+      live ? 'tempo di gioco' : 'tempo di gioco alla radio';
+
+    let note;
+    if (live) {
+      note = liveClock.status || 'in diretta';
+      if (liveState === 'paused') note += ' · fermo';
+      if (liveClock.uncertainty != null && liveClock.uncertainty > 1) note += ' · ±' + liveClock.uncertainty + ' s';
+    } else if (liveState === 'stale') {
+      note = 'feed muto';
+    } else if (anchor) {
+      note = 'avviato a mano';
+    } else {
+      note = 'partita non in corso';
+    }
+    document.getElementById('clockNote').textContent = note;
+
+    /* minuto che si sente alla radio: quello del campo meno il ritardo impostato */
+    if (live && t !== null && delay !== null) {
+      radioTimeEl.innerHTML = 'alla radio ≈ <b>' + clockText(t - delay) + '</b>';
+      radioTimeEl.hidden = false;
+    } else {
+      radioTimeEl.hidden = true;
+    }
   }
-  document.getElementById('clockNote').textContent = note;
 
   const manual = document.getElementById('anchors');
   const toggle = document.getElementById('manualToggle');
@@ -361,23 +420,13 @@ function connect() {
   audio.play().catch(() => {});
 }
 
+/* in intestazione la partita compare solo quando il cronometro grande non la mostra già */
 function renderMatch() {
   const el = document.getElementById('match');
   if (!nextMatch) { el.hidden = true; return; }
-  const kickoff = new Date(nextMatch.kickoff_utc);
-  const left = (kickoff - new Date()) / 1000;
-  let when;
-  if (left <= 0) {
-    when = 'in corso';
-  } else if (left < 3600) {
-    when = 'fra ' + mmss(left);
-  } else if (left < 86400) {
-    when = 'fra ' + Math.floor(left / 3600) + 'h ' + Math.floor((left % 3600) / 60) + 'm';
-  } else {
-    const g = Math.round(left / 86400);
-    when = 'fra ' + g + (g === 1 ? ' giorno' : ' giorni');
-  }
-  el.textContent = nextMatch.home + ' – ' + nextMatch.away + '\n' + when;
+  const left = kickoffLeft();
+  if (currentClock() === null && left > 0) { el.hidden = true; return; }
+  el.textContent = nextMatch.home + ' – ' + nextMatch.away + '\n' + (left <= 0 ? 'in corso' : 'fra ' + mmss(left));
   el.hidden = false;
 }
 
@@ -405,7 +454,7 @@ async function poll() {
     document.getElementById('rBuffer').textContent = Math.round(s.buffer_seconds) + ' s';
     document.getElementById('rUpstream').textContent =
       (s.upstream_connected ? 'ok' : 'giù') + ' · ' + s.upstream_reconnects + ' drop';
-    document.getElementById('rUpstream').classList.toggle('on', !s.upstream_connected);
+    document.getElementById('alarm').hidden = !!s.upstream_connected;
 
     ready = s.ready;
     btn.disabled = !s.ready;
@@ -437,6 +486,14 @@ document.getElementById('manualToggle').addEventListener('click', () => {
 document.getElementById('start1').addEventListener('click', () => setAnchor(0));
 document.getElementById('start2').addEventListener('click', () => setAnchor(2700));
 
+/* blocco TV: aperto di default, si richiude dopo "imposta", si riapre con un tocco */
+function setTvOpen(open) {
+  tvBlock.hidden = !open;
+  tvToggle.textContent = open ? 'tv ▴' : 'tv ▾';
+}
+tvToggle.addEventListener('click', () => setTvOpen(tvBlock.hidden));
+setTvOpen(true);
+
 const cmpBtn = document.getElementById('cmp');
 tvInput.addEventListener('input', () => {
   cmpBtn.textContent = parseTv(tvInput.value) === null ? 'confronta' : 'adesso';
@@ -451,6 +508,7 @@ applyBtn.addEventListener('click', () => {
   verdict.textContent = 'allineato';
   applyBtn.hidden = true;
   pendingTarget = null;
+  setTimeout(() => setTvOpen(false), 1200);
 });
 
 slider.addEventListener('input', () => setDelay(Number(slider.value), true));
