@@ -10,6 +10,7 @@ STATION_NAME.
 """
 
 import os
+import re
 import time
 import threading
 from collections import deque
@@ -78,6 +79,19 @@ FEED_BIAS_SECONDS = int(os.environ.get("FEED_BIAS_SECONDS", "30"))
 # in cui arriva: il cronometro resta indietro di quella quantità. Si misura con
 # una sola lettura contro un cronometro affidabile (diretta.it) e si scrive qui.
 CLOCK_OFFSET_SECONDS = int(os.environ.get("CLOCK_OFFSET_SECONDS", "0"))
+
+# --- tempo esatto da diretta.it (opzionale) ----------------------------
+# Indirizzo della pagina della partita su diretta.it, per esempio
+# https://www.diretta.it/partita/calcio/napoli-.../villarreal-.../?mid=XXXX
+# Se è impostato, il tempo di gioco con i secondi viene ricostruito dai dati
+# di quella pagina (inizio del tempo in corso + tipo di tempo), con la stessa
+# regola che usa il sito. API-Football resta come riserva.
+DIRETTA_URL = os.environ.get("DIRETTA_URL", "").strip()
+DIRETTA_POLL_SECONDS = int(os.environ.get("DIRETTA_POLL_SECONDS", "15"))
+# Il tempo che arriva da diretta.it non è in ritardo come quello di API-Football:
+# la costante di taratura di prima (FEED_BIAS_SECONDS) non vale più. Si parte da
+# zero e si affina dal campo "tv" della pagina.
+DIRETTA_BIAS_SECONDS = int(os.environ.get("DIRETTA_BIAS_SECONDS", "0"))
 
 # ---------------------------------------------------------------- buffer
 
@@ -481,6 +495,137 @@ def live_loop():
         time.sleep(wait)
 
 
+# ---------------------------------------------------------------- diretta.it
+
+DIRETTA_FIRST_HALF = 12
+DIRETTA_SECOND_HALF = 13
+DIRETTA_BREAK = {38, 46}      # intervallo
+# Senza una lettura riuscita da così tanto, meglio nessun tempo che uno inventato.
+DIRETTA_STALE_AFTER = 90
+
+
+class Diretta:
+    """Il tempo di gioco come lo ricostruisce diretta.it.
+
+    La pagina della partita dice in che tempo siamo (eventStageId) e a che
+    istante è cominciato (eventStageStartTime, secondi Unix). Il tempo è
+    quell'istante contro l'orologio di adesso: nel secondo tempo si parte da
+    45:00. Provato contro il sito: coincide al secondo.
+    """
+
+    def __init__(self):
+        self.stage_id = None
+        self.stage_start = None
+        self.fetched_at = None
+        self.http_status = None
+        self.last_error = None
+
+    def status(self):
+        if self.stage_id == DIRETTA_FIRST_HALF:
+            return "1H"
+        if self.stage_id == DIRETTA_SECOND_HALF:
+            return "2H"
+        if self.stage_id in DIRETTA_BREAK:
+            return "HT"
+        return None
+
+    def clock_seconds(self):
+        if not DIRETTA_URL or self.stage_id is None or self.fetched_at is None:
+            return None
+        now = time.time()
+        if now - self.fetched_at > DIRETTA_STALE_AFTER:
+            return None
+        if self.stage_id in DIRETTA_BREAK:
+            return 2700.0
+        if self.stage_start is None:
+            return None
+        if self.stage_id == DIRETTA_FIRST_HALF:
+            t = now - self.stage_start
+            return t if 0 <= t <= 3600 else None
+        if self.stage_id == DIRETTA_SECOND_HALF:
+            t = 2700 + now - self.stage_start
+            return t if 2700 <= t <= 6300 else None
+        # Primo/secondo tempo supplementare, rigori, finale: non li ricostruiamo.
+        return None
+
+
+diretta = Diretta()
+
+
+def fetch_diretta():
+    response = requests.get(
+        DIRETTA_URL,
+        headers={
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+            "Accept-Language": "it-IT,it;q=0.9",
+        },
+        timeout=10,
+    )
+    diretta.http_status = response.status_code
+    response.raise_for_status()
+    html = response.text
+
+    stage = re.search(r'"eventStageId":\s*(\d+)', html)
+    if not stage:
+        raise RuntimeError("la pagina non contiene i dati della partita")
+    start = re.search(r'"eventStageStartTime":\s*(\d+)', html)
+
+    diretta.stage_id = int(stage.group(1))
+    diretta.stage_start = int(start.group(1)) if start else None
+    diretta.fetched_at = time.time()
+    diretta.last_error = None
+
+
+def diretta_loop():
+    wait_error = DIRETTA_POLL_SECONDS
+    while True:
+        window = in_match_window()
+        if window is False:
+            # Una partita nota e non adesso: niente richieste al sito.
+            diretta.stage_id = None
+            diretta.stage_start = None
+            time.sleep(60)
+            continue
+        try:
+            fetch_diretta()
+            wait_error = DIRETTA_POLL_SECONDS
+            # Quando non sappiamo se la partita è in corso, controlliamo di rado;
+            # appena la pagina dice che si gioca, torniamo al ritmo normale.
+            playing = diretta.stage_id in ({DIRETTA_FIRST_HALF, DIRETTA_SECOND_HALF} | DIRETTA_BREAK)
+            time.sleep(DIRETTA_POLL_SECONDS if (playing or window is True) else 120)
+        except Exception as exc:  # noqa: BLE001 - never disturb the radio
+            diretta.last_error = str(exc)
+            app.logger.warning("diretta.it lookup failed: %s", exc)
+            # Se il sito ci respinge, non insistiamo.
+            blocked = diretta.http_status in (403, 429)
+            wait_error = min(max(wait_error * 2, 30), 600 if blocked else 120)
+            time.sleep(wait_error)
+
+
+def current_live():
+    """Il tempo da mostrare: diretta.it se c'è, altrimenti API-Football."""
+    d = diretta.clock_seconds()
+    if d is not None:
+        return {
+            "clock_seconds": round(d, 1),
+            "uncertainty": 1,
+            "status": diretta.status(),
+            "source": "diretta",
+        }
+    a = live.clock_seconds()
+    if a is not None:
+        return {
+            "clock_seconds": round(a, 1),
+            "uncertainty": None if live.uncertainty() is None else round(live.uncertainty()),
+            "status": live.status,
+            "home": live.home,
+            "away": live.away,
+            "source": "api-football",
+        }
+    return None
+
+
 # ---------------------------------------------------------------- app
 
 # No static folder: index.html is served explicitly, so nothing else in the
@@ -505,6 +650,8 @@ def index():
 def live_state():
     """Why there is (or is not) a live clock — so a problem can be read off
     /status from a phone instead of guessed at."""
+    if diretta.clock_seconds() is not None:
+        return "paused" if diretta.status() == "HT" else "ok"
     if not API_FOOTBALL_KEY:
         return "off"
     if live.anchored_at is None:
@@ -527,25 +674,20 @@ def status():
         max_delay_seconds=MAX_DELAY_SECONDS,
         # Allineare il cronometro non deve spostare il suggerimento: lo scarto
         # calcolato cresce dell'offset, e la taratura cala della stessa quantità.
-        feed_bias=FEED_BIAS_SECONDS - CLOCK_OFFSET_SECONDS,
+        feed_bias=(
+            DIRETTA_BIAS_SECONDS
+            if diretta.clock_seconds() is not None
+            else FEED_BIAS_SECONDS - CLOCK_OFFSET_SECONDS
+        ),
         clock_offset=CLOCK_OFFSET_SECONDS,
         station=STATION_NAME,
         upstream_reconnects=upstream.reconnects,
         uptime_seconds=round(time.time() - upstream.started_at),
         next_match=fixtures.next_match,
-        live_match=(
-            None
-            if live.clock_seconds() is None
-            else {
-                "clock_seconds": round(live.clock_seconds(), 1),
-                "uncertainty": (
-                    None if live.uncertainty() is None else round(live.uncertainty())
-                ),
-                "status": live.status,
-                "home": live.home,
-                "away": live.away,
-            }
-        ),
+        live_match=current_live(),
+        diretta_on=bool(DIRETTA_URL),
+        diretta_http=diretta.http_status,
+        diretta_error=(diretta.last_error or "")[:160] or None,
         live_state=live_state(),
         # Why the feed is unhappy, in plain sight: without this the only way
         # to tell a spent quota from a wrong key is to read the server logs.
@@ -611,6 +753,9 @@ if FOOTBALL_TOKEN:
 
 if API_FOOTBALL_KEY:
     threading.Thread(target=live_loop, name="live", daemon=True).start()
+
+if DIRETTA_URL:
+    threading.Thread(target=diretta_loop, name="diretta", daemon=True).start()
 
 
 if __name__ == "__main__":

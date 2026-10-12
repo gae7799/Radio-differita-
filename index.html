@@ -123,10 +123,6 @@
   #resync { align-self: flex-start; }
   .postilla { margin: 2px 0 0; color: var(--dim); font-size: 10.5px; line-height: 1.6;
               letter-spacing: .02em; }
-  #manualToggle { border: 0; background: none; color: var(--dim); font: inherit; font-size: 11px;
-                  letter-spacing: .1em; text-transform: uppercase; text-decoration: underline;
-                  cursor: pointer; padding: 0; align-self: flex-start; }
-  #anchors { display: flex; gap: 8px; }
 
   /* diagnostica: piccola, in fondo */
   .diag { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: baseline; margin: 0; }
@@ -167,12 +163,6 @@
     </div>
     <div id="verdict"></div>
     <button id="apply" hidden></button>
-  </div>
-
-  <button class="btn" id="manualToggle" hidden>avvia a mano</button>
-  <div id="anchors" hidden>
-    <button class="btn" id="start1">via 1º tempo</button>
-    <button class="btn" id="start2">via 2º tempo</button>
   </div>
 
   <div class="breathe"></div>
@@ -232,14 +222,23 @@ let liveState = 'off';
 
 let feedBias = 0;
 let feedBiasLearned = false;
+let feedSource = null;
 let lastSuggested = null;
-try {
-  const stored = localStorage.getItem('feedBias');
-  if (stored !== null) { feedBias = Number(stored) || 0; feedBiasLearned = true; }
-} catch (e) {}
+/* La taratura imparata vale per la fonte del tempo che l'ha prodotta:
+   quella di diretta.it non è in ritardo come quella di API-Football. */
+function useSource(source, serverBias) {
+  if (source === feedSource) return;
+  feedSource = source;
+  feedBias = Number(serverBias) || 0;
+  feedBiasLearned = false;
+  try {
+    const stored = localStorage.getItem('feedBias:' + source);
+    if (stored !== null) { feedBias = Number(stored) || 0; feedBiasLearned = true; }
+  } catch (e) {}
+}
 function saveBias() {
   feedBiasLearned = true;
-  try { localStorage.setItem('feedBias', String(feedBias)); } catch (e) {}
+  try { localStorage.setItem('feedBias:' + feedSource, String(feedBias)); } catch (e) {}
 }
 
 function mmss(s) {
@@ -308,8 +307,10 @@ function renderClock() {
 
     let note;
     if (live) {
-      note = liveClock.status || 'in diretta';
-      if (liveState === 'paused') note += ' · fermo';
+      const names = { '1H': '1º tempo', '2H': '2º tempo', 'HT': 'intervallo' };
+      note = names[liveClock.status] || liveClock.status || 'in diretta';
+      if (liveClock.source === 'diretta') note += ' · diretta.it';
+      if (liveState === 'paused' && liveClock.status !== 'HT') note += ' · fermo';
       if (liveClock.uncertainty != null && liveClock.uncertainty > 1) note += ' · ±' + liveClock.uncertainty + ' s';
     } else if (liveState === 'stale') {
       note = 'feed muto';
@@ -328,12 +329,6 @@ function renderClock() {
       radioTimeEl.hidden = true;
     }
   }
-
-  const manual = document.getElementById('anchors');
-  const toggle = document.getElementById('manualToggle');
-  if (live) { manual.hidden = true; toggle.hidden = true; }
-  else if (!manual.hidden) { toggle.hidden = true; }
-  else { toggle.hidden = false; }
 }
 
 function setAnchor(base) {
@@ -440,13 +435,14 @@ async function poll() {
     nextMatch = s.next_match || null;
     renderMatch();
     slider.max = s.max_delay_seconds;
-    if (!feedBiasLearned && s.feed_bias != null) feedBias = s.feed_bias;
 
     liveState = s.live_state || 'off';
     liveClock = s.live_match
       ? { seconds: s.live_match.clock_seconds, receivedAt: Date.now() / 1000,
-          uncertainty: s.live_match.uncertainty, status: s.live_match.status }
+          uncertainty: s.live_match.uncertainty, status: s.live_match.status,
+          source: s.live_match.source || 'api-football' }
       : null;
+    if (liveClock) useSource(liveClock.source, s.feed_bias);
 
     if (delay === null) setDelay(s.default_delay_seconds);
     renderClock();
@@ -479,21 +475,6 @@ btn.addEventListener('click', () => {
   poll();
 });
 document.getElementById('resync').addEventListener('click', () => { if (playing) connect(); });
-document.getElementById('manualToggle').addEventListener('click', () => {
-  document.getElementById('anchors').hidden = false;
-  document.getElementById('manualToggle').hidden = true;
-});
-document.getElementById('start1').addEventListener('click', () => setAnchor(0));
-document.getElementById('start2').addEventListener('click', () => setAnchor(2700));
-
-/* blocco TV: aperto di default, si richiude dopo "imposta", si riapre con un tocco */
-function setTvOpen(open) {
-  tvBlock.hidden = !open;
-  tvToggle.textContent = open ? 'tv ▴' : 'tv ▾';
-}
-tvToggle.addEventListener('click', () => setTvOpen(tvBlock.hidden));
-setTvOpen(true);
-
 const cmpBtn = document.getElementById('cmp');
 tvInput.addEventListener('input', () => {
   cmpBtn.textContent = parseTv(tvInput.value) === null ? 'confronta' : 'adesso';
