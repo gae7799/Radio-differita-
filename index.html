@@ -476,8 +476,14 @@ btn.addEventListener('click', () => {
 });
 document.getElementById('resync').addEventListener('click', () => { if (playing) connect(); });
 const cmpBtn = document.getElementById('cmp');
+/* si digitano solo le cifre: i due punti compaiono da soli (8210 -> 82:10) */
+function formatTv(value) {
+ const d = (value || '').replace(/\D/g, '').slice(0, 5);
+ return d.length > 2 ? d.slice(0, -2) + ':' + d.slice(-2) : d;
+}
 tvInput.addEventListener('input', () => {
-  cmpBtn.textContent = parseTv(tvInput.value) === null ? 'confronta' : 'adesso';
+ tvInput.value = formatTv(tvInput.value);
+ cmpBtn.textContent = parseTv(tvInput.value) === null ? 'confronta' : 'adesso';
 });
 cmpBtn.addEventListener('click', compare);
 
