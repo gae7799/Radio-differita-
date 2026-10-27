@@ -93,6 +93,17 @@ DIRETTA_POLL_SECONDS = int(os.environ.get("DIRETTA_POLL_SECONDS", "15"))
 # zero e si affina dal campo "tv" della pagina.
 DIRETTA_BIAS_SECONDS = int(os.environ.get("DIRETTA_BIAS_SECONDS", "0"))
 
+# Scelta automatica della partita: l'app legge il calendario del Napoli (calcio,
+# prima squadra) su diretta.it e prende da sola la prima gara non ancora finita.
+# DIRETTA_URL, se c'è, resta come riserva quando il calendario non risponde.
+# DIRETTA_AUTO=0 la spegne. La squadra si riconosce dal codice, non dal nome.
+DIRETTA_AUTO = os.environ.get("DIRETTA_AUTO", "1").strip() != "0"
+DIRETTA_TEAM_ID = os.environ.get("DIRETTA_TEAM_ID", "69Dxbc61").strip()
+DIRETTA_TEAM_URL = os.environ.get(
+    "DIRETTA_TEAM_URL", "https://www.diretta.it/squadra/napoli/69Dxbc61/calendario/"
+).strip()
+DIRETTA_CALENDAR_REFRESH = int(os.environ.get("DIRETTA_CALENDAR_REFRESH", "3600"))
+
 # ---------------------------------------------------------------- buffer
 
 
@@ -519,6 +530,12 @@ class Diretta:
         self.fetched_at = None
         self.http_status = None
         self.last_error = None
+        # La partita seguita: indirizzo, inizio previsto (Unix) e nome.
+        self.url = DIRETTA_URL or None
+        self.kickoff_ts = None
+        self.match_label = None
+        self.calendar_checked_at = None
+        self.calendar_error = None
 
     def status(self):
         if self.stage_id == DIRETTA_FIRST_HALF:
@@ -530,7 +547,7 @@ class Diretta:
         return None
 
     def clock_seconds(self):
-        if not DIRETTA_URL or self.stage_id is None or self.fetched_at is None:
+        if not self.url or self.stage_id is None or self.fetched_at is None:
             return None
         now = time.time()
         if now - self.fetched_at > DIRETTA_STALE_AFTER:
@@ -552,14 +569,96 @@ class Diretta:
 diretta = Diretta()
 
 
+DIRETTA_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+    "Accept-Language": "it-IT,it;q=0.9",
+}
+
+
+def parse_calendar(html):
+    """Le partite nel calendario di una squadra su diretta.it.
+
+    Nella pagina i dati stanno in un blocco di testo: ogni partita comincia con
+    "~AA÷<codice>", i campi sono separati da "¬" e nome e valore da "÷".
+    AD = inizio (Unix), AB = stato (1 da giocare, 2 in corso, 3 finita),
+    PX/PY = codici di casa e ospite, WU/WV = i loro nomi nell'indirizzo.
+    """
+    matches = []
+    for part in html.split("~"):
+        if not part.startswith("AA÷"):
+            continue
+        fields = {}
+        for item in part.split("¬"):
+            name, sep, value = item.partition("÷")
+            if sep:
+                fields[name] = value
+        needed = ("AA", "AD", "AB", "PX", "PY", "WU", "WV")
+        if not all(fields.get(k) for k in needed):
+            continue
+        try:
+            fields["ts"] = int(fields["AD"])
+        except ValueError:
+            continue
+        matches.append(fields)
+    return matches
+
+
+def pick_match(matches, now):
+    """La prima partita del Napoli non ancora finita (in corso o da giocare)."""
+    best = None
+    for m in matches:
+        if DIRETTA_TEAM_ID not in (m["PX"], m["PY"]):
+            continue
+        if m["AB"] not in ("1", "2"):
+            continue
+        if m["ts"] < now - 4 * 3600:
+            continue
+        if best is None or m["ts"] < best["ts"]:
+            best = m
+    return best
+
+
+def match_url(m):
+    return (f"https://www.diretta.it/partita/calcio/{m['WU']}-{m['PX']}/"
+            f"{m['WV']}-{m['PY']}/?mid={m['AA']}")
+
+
+def refresh_calendar():
+    response = requests.get(DIRETTA_TEAM_URL, headers=DIRETTA_HEADERS, timeout=15)
+    diretta.http_status = response.status_code
+    response.raise_for_status()
+    matches = parse_calendar(response.text)
+    if not matches:
+        raise RuntimeError("il calendario non contiene partite (la pagina è cambiata?)")
+    diretta.calendar_checked_at = time.time()
+    m = pick_match(matches, time.time())
+    if m is None:
+        return  # nessuna gara in programma: teniamo quello che c'era
+    url = match_url(m)
+    if url != diretta.url:
+        # Un'altra partita: i dati della precedente non valgono più.
+        diretta.stage_id = None
+        diretta.stage_start = None
+        diretta.fetched_at = None
+        app.logger.info("diretta.it: seguo %s", url)
+    diretta.url = url
+    diretta.kickoff_ts = m["ts"]
+    diretta.match_label = f"{m.get('AE', '?')} - {m.get('AF', '?')}"
+
+
+def diretta_window():
+    """True quando la partita seguita è in corso (o sta per cominciare)."""
+    if diretta.kickoff_ts:
+        elapsed = time.time() - diretta.kickoff_ts
+        return -300 <= elapsed <= 190 * 60
+    return in_match_window()
+
+
 def fetch_diretta():
     response = requests.get(
-        DIRETTA_URL,
-        headers={
-            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                           "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
-            "Accept-Language": "it-IT,it;q=0.9",
-        },
+        diretta.url,
+        headers=DIRETTA_HEADERS,
         timeout=10,
     )
     diretta.http_status = response.status_code
@@ -579,8 +678,21 @@ def fetch_diretta():
 
 def diretta_loop():
     wait_error = DIRETTA_POLL_SECONDS
+    next_calendar = 0
     while True:
-        window = in_match_window()
+        if DIRETTA_AUTO and time.time() >= next_calendar:
+            try:
+                refresh_calendar()
+                diretta.calendar_error = None
+                next_calendar = time.time() + DIRETTA_CALENDAR_REFRESH
+            except Exception as exc:  # noqa: BLE001 - never disturb the radio
+                diretta.calendar_error = str(exc)
+                app.logger.warning("diretta.it calendar failed: %s", exc)
+                next_calendar = time.time() + 600
+        if not diretta.url:
+            time.sleep(60)
+            continue
+        window = diretta_window()
         if window is False:
             # Una partita nota e non adesso: niente richieste al sito.
             diretta.stage_id = None
@@ -685,7 +797,10 @@ def status():
         uptime_seconds=round(time.time() - upstream.started_at),
         next_match=fixtures.next_match,
         live_match=current_live(),
-        diretta_on=bool(DIRETTA_URL),
+        diretta_on=bool(diretta.url),
+        diretta_match=diretta.match_label,
+        diretta_kickoff=diretta.kickoff_ts,
+        diretta_calendar_error=(diretta.calendar_error or "")[:160] or None,
         diretta_http=diretta.http_status,
         diretta_error=(diretta.last_error or "")[:160] or None,
         live_state=live_state(),
@@ -754,7 +869,7 @@ if FOOTBALL_TOKEN:
 if API_FOOTBALL_KEY:
     threading.Thread(target=live_loop, name="live", daemon=True).start()
 
-if DIRETTA_URL:
+if DIRETTA_URL or DIRETTA_AUTO:
     threading.Thread(target=diretta_loop, name="diretta", daemon=True).start()
 
 
