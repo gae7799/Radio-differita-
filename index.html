@@ -62,8 +62,6 @@
                 letter-spacing: -.02em; white-space: nowrap; }
   #clockNote { color: var(--dim); font-size: 11.5px; letter-spacing: .08em; min-height: 1.3em;
                white-space: pre-line; }
-  #radioTime { color: var(--mid); font-size: 15px; letter-spacing: .06em; margin-top: 6px; }
-  #radioTime b { color: var(--bright); font-weight: 500; }
 
   /* scarto + apertura del confronto TV */
   .gaprow { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
@@ -146,7 +144,6 @@
     <div id="clockLabel">tempo di gioco</div>
     <div id="clockValue">--:--</div>
     <div id="clockNote"></div>
-    <div id="radioTime" hidden></div>
   </div>
   <hr>
 
@@ -207,7 +204,6 @@ const verdict = document.getElementById('verdict');
 const applyBtn = document.getElementById('apply');
 const tvBlock = document.getElementById('tvBlock');
 const tvToggle = document.getElementById('tvToggle');
-const radioTimeEl = document.getElementById('radioTime');
 
 let delay = null;
 let ready = false;
@@ -299,7 +295,6 @@ function renderClock() {
     clockEl.textContent = countdownBig(left);
     document.getElementById('clockNote').textContent =
       nextMatch.home + ' – ' + nextMatch.away;
-    radioTimeEl.hidden = true;
   } else {
     clockEl.textContent = t === null ? '--:--' : clockText(t);
     document.getElementById('clockLabel').textContent =
@@ -320,14 +315,6 @@ function renderClock() {
       note = 'partita non in corso';
     }
     document.getElementById('clockNote').textContent = note;
-
-    /* minuto che si sente alla radio: quello del campo meno il ritardo impostato */
-    if (live && t !== null && delay !== null) {
-      radioTimeEl.innerHTML = 'alla radio ≈ <b>' + clockText(t - delay) + '</b>';
-      radioTimeEl.hidden = false;
-    } else {
-      radioTimeEl.hidden = true;
-    }
   }
 }
 
