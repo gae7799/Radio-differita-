@@ -355,27 +355,28 @@ function setDelay(value, manual) {
   poll();
 }
 
-const MEASURE_TTL = 180;
-let measures = [];
-function median(values) {
-  const v = values.slice().sort((a, b) => a - b);
-  const m = v.length >> 1;
-  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
-}
+/* Il tempo della TV si legge in un istante e si scrive dopo qualche secondo.
+   Per questo il cronometro si ferma sulla prima cifra digitata, che è il momento
+   in cui si è guardata la TV: lo scarto è quell'istante contro il valore scritto,
+   non contro il momento in cui si preme "confronta". */
+let tvStamp = null;   /* { clock, used } */
 
 function compare() {
-  const mine = currentClock();
   const theirs = parseTv(tvInput.value);
-  if (mine === null) { verdict.textContent = 'prima avvia il cronometro'; return; }
   if (theirs === null) { verdict.textContent = 'scrivi il tempo della TV, es. 43:20'; return; }
+  if (tvStamp === null || tvStamp.used) {
+    verdict.textContent = 'riscrivi il tempo della TV: va letto ogni volta';
+    return;
+  }
+  const mine = tvStamp.clock;
+  if (mine === null) { verdict.textContent = 'prima avvia il cronometro'; return; }
+  tvStamp.used = true;
 
-  const now = Date.now() / 1000;
   const gapNow = mine - theirs;
 
   if (isLive()) {
-    measures = measures.filter(m => now - m.at < MEASURE_TTL);
-    measures.push({ gap: gapNow, at: now });
-    const gap = median(measures.map(m => m.gap));
+    /* conta solo l'ultima misura: il ritardo della TV cambia durante la partita */
+    const gap = gapNow;
     const target = Math.round(gap + feedBias);
 
     document.getElementById('rGap').textContent =
@@ -389,8 +390,7 @@ function compare() {
     pendingTarget = Math.max(0, Math.min(target, Number(slider.max)));
     const rough = liveClock.uncertainty != null && liveClock.uncertainty > 8;
     verdict.textContent = (gap >= 0 ? 'la TV è indietro di ' : 'la TV è avanti di ')
-                        + Math.abs(Math.round(gap)) + ' s'
-                        + (measures.length > 1 ? ' · ' + measures.length + ' misure' : '');
+                        + Math.abs(Math.round(gap)) + ' s';
     applyBtn.textContent = 'imposta ' + (rough ? '~' : '') + pendingTarget + ' s';
     applyBtn.hidden = false;
     return;
@@ -484,6 +484,8 @@ function formatTv(value) {
 tvInput.addEventListener('input', () => {
  tvInput.value = formatTv(tvInput.value);
  cmpBtn.textContent = parseTv(tvInput.value) === null ? 'confronta' : 'adesso';
+ if (!tvInput.value) tvStamp = null;
+ else if (tvStamp === null || tvStamp.used) tvStamp = { clock: currentClock(), used: false };
 });
 cmpBtn.addEventListener('click', compare);
 
