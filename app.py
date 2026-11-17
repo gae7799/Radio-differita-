@@ -42,6 +42,17 @@ RETENTION_SECONDS = MAX_DELAY_SECONDS + SLACK_SECONDS
 CHUNK_SIZE = 4096
 DEFAULT_CONTENT_TYPE = "audio/mpeg"
 
+# Appena ci si collega, il server di fluidstream manda subito gli ultimi
+# BURST_SECONDS secondi già trasmessi (misurati: 15 s, sia in MP3 che in AAC).
+# Non sono audio nuovo: vanno messi nel buffer con l'orario in cui sono stati
+# trasmessi davvero, altrimenti sembrano appena arrivati e il ritardo di chi
+# ascolta slitta di quei secondi a ogni connessione. 0 = comportamento di prima.
+BURST_SECONDS = float(os.environ.get("BURST_SECONDS", "15"))
+# Byte al secondo del flusso, per convertire byte in secondi. Se non è
+# impostato si ricava dal tipo di contenuto (MP3 128 kbps, AAC 64 kbps).
+STREAM_BYTES_PER_SECOND = int(os.environ.get("STREAM_BYTES_PER_SECOND", "0")) or None
+BYTES_PER_SECOND_BY_TYPE = {"audio/mpeg": 16000, "audio/aac": 8000, "audio/aacp": 8000}
+
 # --- next fixture (optional) -------------------------------------------
 # Free API key from football-data.org. Without it this whole feature stays
 # switched off and the page looks exactly as it did before.
@@ -121,10 +132,19 @@ class RingBuffer:
         self._lock = threading.Lock()
         self._new_data = threading.Condition(self._lock)
 
-    def append(self, data):
+    def last_ts(self):
+        """Orario dell'ultimo pezzo in buffer, None se è vuoto."""
+        with self._lock:
+            return self._chunks[-1][1] if self._chunks else None
+
+    def append(self, data, ts=None):
         now = time.time()
         with self._new_data:
-            self._chunks.append((self._next_seq, now, data))
+            # Gli orari devono restare crescenti: il buffer si cerca per orario.
+            stamp = now if ts is None else ts
+            if self._chunks and stamp < self._chunks[-1][1]:
+                stamp = self._chunks[-1][1]
+            self._chunks.append((self._next_seq, stamp, data))
             self._next_seq += 1
             cutoff = now - self.retention
             while self._chunks and self._chunks[0][1] < cutoff:
@@ -191,6 +211,10 @@ class Upstream:
         # buffer stamped "now", pushing every listener further behind.
         self.reconnects = 0
         self.started_at = time.time()
+        # Quanti secondi di arretrato ha mandato l'ultima connessione (misurato
+        # sul campo) e quanti pezzi già in buffer sono stati saltati.
+        self.burst_seen = None
+        self.burst_skipped_chunks = 0
 
 
 upstream = Upstream()
@@ -220,9 +244,40 @@ def upstream_loop():
             connections += 1
             upstream.reconnects = connections - 1
 
+            t_connect = time.time()
+            rate = STREAM_BYTES_PER_SECOND or BYTES_PER_SECOND_BY_TYPE.get(upstream.content_type)
+            burst_bytes = int(BURST_SECONDS * rate) if (rate and BURST_SECONDS > 0) else 0
+            last_ts = buffer.last_ts()      # None alla prima connessione
+            received = 0
+            measured = False
+
             for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
-                if chunk:
+                if not chunk:
+                    continue
+                if received < burst_bytes:
+                    # Arretrato: l'orario è quello in cui l'audio è stato
+                    # trasmesso, non quello in cui ci è arrivato. Se era già
+                    # nel buffer prima della caduta lo si salta.
+                    ts = t_connect - BURST_SECONDS + received / rate
+                    received += len(chunk)
+                    if last_ts is not None and ts <= last_ts:
+                        upstream.burst_skipped_chunks += 1
+                        continue
+                    buffer.append(chunk, ts=ts)
+                else:
+                    received += len(chunk)
                     buffer.append(chunk)
+
+                # Controllo sul campo: dopo qualche secondo, quanto arretrato
+                # ci ha mandato davvero il server? Se non torna con
+                # BURST_SECONDS lo si vede in /status e nei log.
+                if rate and not measured and time.time() - t_connect >= 8:
+                    measured = True
+                    upstream.burst_seen = round(received / rate - (time.time() - t_connect), 1)
+                    if BURST_SECONDS > 0 and abs(upstream.burst_seen - BURST_SECONDS) > 3:
+                        app.logger.warning(
+                            "arretrato misurato %.1f s, atteso %.1f s: controllare BURST_SECONDS",
+                            upstream.burst_seen, BURST_SECONDS)
 
             raise RuntimeError("upstream closed the connection")
 
@@ -794,6 +849,7 @@ def status():
         clock_offset=CLOCK_OFFSET_SECONDS,
         station=STATION_NAME,
         upstream_reconnects=upstream.reconnects,
+        upstream_burst_seen=upstream.burst_seen,
         uptime_seconds=round(time.time() - upstream.started_at),
         next_match=fixtures.next_match,
         live_match=current_live(),
