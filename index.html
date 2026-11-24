@@ -216,27 +216,6 @@ let pendingTarget = null;
 let liveClock = null;
 let liveState = 'off';
 
-let feedBias = 0;
-let feedBiasLearned = false;
-let feedSource = null;
-let lastSuggested = null;
-/* La taratura imparata vale per la fonte del tempo che l'ha prodotta:
-   quella di diretta.it non è in ritardo come quella di API-Football. */
-function useSource(source, serverBias) {
-  if (source === feedSource) return;
-  feedSource = source;
-  feedBias = Number(serverBias) || 0;
-  feedBiasLearned = false;
-  try {
-    const stored = localStorage.getItem('feedBias:' + source);
-    if (stored !== null) { feedBias = Number(stored) || 0; feedBiasLearned = true; }
-  } catch (e) {}
-}
-function saveBias() {
-  feedBiasLearned = true;
-  try { localStorage.setItem('feedBias:' + feedSource, String(feedBias)); } catch (e) {}
-}
-
 function mmss(s) {
   s = Math.max(0, Math.round(s));
   return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
@@ -328,12 +307,6 @@ function setAnchor(base) {
 }
 
 function setDelay(value, manual) {
-  if (manual && lastSuggested !== null && isLive()) {
-    const target = Math.max(0, Math.min(value, Number(slider.max)));
-    feedBias += target - lastSuggested;
-    lastSuggested = null;
-    saveBias();
-  }
   delay = Math.max(0, Math.min(value, Number(slider.max)));
   slider.value = delay;
   secs.innerHTML = delay + '<small>s indietro</small>';
@@ -364,7 +337,7 @@ function compare() {
   if (isLive()) {
     /* conta solo l'ultima misura: il ritardo della TV cambia durante la partita */
     const gap = gapNow;
-    const target = Math.round(gap + feedBias);
+    const target = Math.round(gap);
 
     document.getElementById('rGap').textContent =
       (gap >= 0 ? '+' : '−') + Math.abs(Math.round(gap)) + ' s';
@@ -464,7 +437,6 @@ async function poll() {
           uncertainty: s.live_match.uncertainty, status: s.live_match.status,
           source: s.live_match.source || 'api-football' }
       : null;
-    if (liveClock) useSource(liveClock.source, s.feed_bias);
 
     if (delay === null) setDelay(s.default_delay_seconds);
     renderClock();
@@ -524,7 +496,6 @@ applyBtn.addEventListener('click', () => {
   if (pendingTarget === null) return;
   const target = pendingTarget;
   setDelay(target);
-  lastSuggested = isLive() ? target : null;
   verdict.textContent = 'allineato';
   applyBtn.hidden = true;
   pendingTarget = null;
