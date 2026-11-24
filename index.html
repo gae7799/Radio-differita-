@@ -397,10 +397,45 @@ function compare() {
   applyBtn.hidden = false;
 }
 
+/* Una risposta lunga ore prima o poi la chiude qualcuno: il proxy davanti
+ all'app, iOS che sospende la scheda, la rete che cambia. Il browser non ci
+ riprova da solo, resta muto come se fosse in pausa. Quindi si guarda se
+ l'audio avanza davvero, e se si ferma ci si riaggancia. Riagganciarsi allo
+ stesso ritardo rimette al punto giusto: si perde un secondo, non la sintonia. */
+let heardAt = 0; /* ultimo istante in cui l'audio e' avanzato */
+let heardTime = 0; /* currentTime a quell'istante */
+let reconnectedAt = 0;
 function connect() {
   audio.src = '/stream?delay=' + delay + '&t=' + Date.now();
   audio.play().catch(() => {});
+  heardAt = Date.now();
+  heardTime = 0;
+  reconnectedAt = Date.now();
 }
+function watchdog() {
+ if (!playing) { heardAt = Date.now(); heardTime = audio.currentTime; return; }
+ /* In pausa senza che tu l'abbia chiesto: telefonata, un'altra app che si
+ prende l'audio, scheda sospesa. Prima si prova a ripartire da dove si era,
+ e se dopo qualche secondo e' ancora muto si riaggancia. */
+ if (audio.paused) {
+ audio.play().catch(() => {});
+ if (Date.now() - heardAt > 5000 && Date.now() - reconnectedAt > 10000) connect();
+ return;
+ }
+ const t = audio.currentTime;
+ if (t > heardTime + 0.05 || t < heardTime) { /* avanza, o e' ripartito da zero */
+ heardTime = t;
+ heardAt = Date.now();
+ return;
+ }
+ if (Date.now() - heardAt > 5000 && Date.now() - reconnectedAt > 10000) connect();
+}
+/* Non l'hai messo in pausa tu: riparti subito, senza aspettare il giro. */
+audio.addEventListener('pause', () => { if (playing) audio.play().catch(() => {}); });
+audio.addEventListener('ended', () => { if (playing) connect(); });
+audio.addEventListener('error', () => { if (playing) connect(); });
+/* Tornando in primo piano i timer erano rallentati: controlla subito. */
+document.addEventListener('visibilitychange', () => { if (!document.hidden) watchdog(); });
 
 /* in intestazione la partita compare solo quando il cronometro grande non la mostra già */
 function renderMatch() {
@@ -445,6 +480,9 @@ async function poll() {
 
     if (!s.ready) stateEl.textContent = 'buffering · ' + mmss(delay - s.buffer_seconds);
     else if (!playing) stateEl.textContent = 'pronto';
+    /* Dire "in onda" mentre l'audio e' fermo e' la bugia peggiore: resti a
+ fissare lo schermo convinto che stia suonando. */
+    else if (audio.paused) stateEl.textContent = 'interrotto · tocca play';
     else stateEl.textContent = s.upstream_connected ? 'in onda' : 'upstream giù';
   } catch (e) {
     stateEl.textContent = 'server irraggiungibile';
@@ -453,6 +491,9 @@ async function poll() {
 }
 
 btn.addEventListener('click', () => {
+  /* Fermo per un'interruzione di sistema: il tasto fa ripartire invece di
+ spegnere, cosi' ne basta uno. */
+  if (playing && audio.paused) { connect(); poll(); return; }
   if (playing) {
     audio.pause(); audio.removeAttribute('src'); audio.load();
     playing = false; btn.innerHTML = '&#9654;';
@@ -498,6 +539,7 @@ poll();
 setInterval(poll, 2000);
 setInterval(renderMatch, 1000);
 setInterval(renderClock, 250);
+setInterval(watchdog, 1000);
 </script>
 </body>
 </html>
